@@ -45,12 +45,22 @@ pub fn main() !void {
         i += section_len;
     }
 
-    for (sections) |pos, index| {
-        if (pos.len == 0) continue;
-        std.debug.print("{s}: pos={d}, len={d}\n", .{
-            @tagName(@intToEnum(std.wasm.Section, index)), pos.index, pos.len,
-        });
-    }
+    const start_fn_idx = i: {
+        // Find _start in the exports
+        i = sections[@enumToInt(std.wasm.Section.@"export")].index;
+        var count = readVarInt(module_bytes, &i, u32);
+        while (count > 0) : (count -= 1) {
+            const name = readName(module_bytes, &i);
+            const desc = readVarInt(module_bytes, &i, std.wasm.ExternalKind);
+            const index = readVarInt(module_bytes, &i, u32);
+            if (mem.eql(u8, name, "_start") and desc == .function) {
+                break :i index;
+            }
+        }
+        return error.StartFunctionNotFound;
+    };
+
+    std.debug.print("start function: {d}\n", .{start_fn_idx});
 }
 
 const SectionPos = struct {
@@ -59,6 +69,13 @@ const SectionPos = struct {
 };
 
 fn readVarInt(bytes: []const u8, i: *usize, comptime T: type) T {
+    switch (@typeInfo(T)) {
+        .Enum => |info| {
+            const int_result = readVarInt(bytes, i, info.tag_type);
+            return @intToEnum(T, int_result);
+        },
+        else => {},
+    }
     const readFn = switch (@typeInfo(T).Int.signedness) {
         .signed => std.leb.readILEB128,
         .unsigned => std.leb.readULEB128,
@@ -67,5 +84,12 @@ fn readVarInt(bytes: []const u8, i: *usize, comptime T: type) T {
     fbs.pos = i.*;
     const result = readFn(T, fbs.reader()) catch unreachable;
     i.* = fbs.pos;
+    return result;
+}
+
+fn readName(bytes: []const u8, i: *usize) []const u8 {
+    const len = readVarInt(bytes, i, u32);
+    const result = bytes[i.*..][0..len];
+    i.* += len;
     return result;
 }
