@@ -41,11 +41,11 @@ pub fn main() !void {
     }
 
     // Count the imported functions so we can correct function references.
-    const import_fn_count = c: {
+    const imports = i: {
         i = section_starts[@enumToInt(wasm.Section.import)];
-        var count = readVarInt(module_bytes, &i, u32);
-        var fn_count: u32 = 0;
-        while (count > 0) : (count -= 1) {
+        const imports_len = readVarInt(module_bytes, &i, u32);
+        const imports = try arena.alloc(Import, imports_len);
+        for (imports) |*imp| {
             const mod_name = readName(module_bytes, &i);
             const sym_name = readName(module_bytes, &i);
             const desc = readVarInt(module_bytes, &i, wasm.ExternalKind);
@@ -58,11 +58,12 @@ pub fn main() !void {
                 .memory => unreachable,
                 .global => unreachable,
             }
-            fn_count += @boolToInt(desc == .function);
-            _ = mod_name;
-            _ = sym_name;
+            imp.* = .{
+                .mod_name = mod_name,
+                .sym_name = sym_name,
+            };
         }
-        break :c fn_count;
+        break :i imports;
     };
 
     // Find _start in the exports
@@ -74,7 +75,7 @@ pub fn main() !void {
             const desc = readVarInt(module_bytes, &i, wasm.ExternalKind);
             const index = readVarInt(module_bytes, &i, u32);
             if (mem.eql(u8, name, "_start") and desc == .function) {
-                break :i index - import_fn_count;
+                break :i index;
             }
         }
         return error.StartFunctionNotFound;
@@ -135,6 +136,18 @@ pub fn main() !void {
         break :g globals;
     };
 
+    // Allocate and initialize memory.
+    const memory = m: {
+        i = section_starts[@enumToInt(wasm.Section.memory)];
+        const memories_len = readVarInt(module_bytes, &i, u32);
+        if (memories_len != 1) return error.UnexpectedMemoryCount;
+        const flags = readVarInt(module_bytes, &i, u32);
+        _ = flags;
+        const initial = readVarInt(module_bytes, &i, u32);
+        const memory = try gpa.alloc(u8, initial);
+        break :m memory;
+    };
+
     var exec: Exec = .{
         .section_starts = section_starts,
         .module_bytes = module_bytes,
@@ -142,6 +155,8 @@ pub fn main() !void {
         .functions = functions,
         .types = types,
         .globals = globals,
+        .memory = memory,
+        .imports = imports,
     };
     exec.initCall(start_fn_idx);
     exec.run();
@@ -159,6 +174,11 @@ const Function = struct {
     type_idx: u32,
 };
 
+const Import = struct {
+    sym_name: []const u8,
+    mod_name: []const u8,
+};
+
 const Exec = struct {
     section_starts: [section_count]u32,
     stack_top: u32,
@@ -168,8 +188,71 @@ const Exec = struct {
     /// Type index to start of type in module_bytes.
     types: []const u32,
     globals: []Value,
+    memory: []u8,
+    imports: []const Import,
 
-    fn initCall(e: *Exec, fn_idx: u32) void {
+    fn initCall(e: *Exec, fn_id: u32) void {
+        if (fn_id < e.imports.len) {
+            const imp = e.imports[fn_id];
+            if (mem.eql(u8, imp.sym_name, "fd_prestat_get")) {
+                @panic("TODO implement fd_prestat_get");
+            } else if (mem.eql(u8, imp.sym_name, "fd_prestat_dir_name")) {
+                @panic("TODO implement fd_prestat_dir_name");
+            } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
+                @panic("TODO implement proc_exit");
+            } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
+                e.stack_top -= 2;
+                e.push(Value, .{ .u32 = wasi_args_sizes_get(
+                    stack[e.stack_top + 1].u32,
+                    stack[e.stack_top + 2].u32,
+                ) });
+            } else if (mem.eql(u8, imp.sym_name, "args_get")) {
+                @panic("TODO implement args_get");
+            } else if (mem.eql(u8, imp.sym_name, "fd_close")) {
+                @panic("TODO implement fd_close");
+            } else if (mem.eql(u8, imp.sym_name, "fd_read")) {
+                @panic("TODO implement fd_read");
+            } else if (mem.eql(u8, imp.sym_name, "fd_filestat_get")) {
+                @panic("TODO implement fd_filestat_get");
+            } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_size")) {
+                @panic("TODO implement fd_filestat_set_size");
+            } else if (mem.eql(u8, imp.sym_name, "fd_pwrite")) {
+                @panic("TODO implement fd_pwrite");
+            } else if (mem.eql(u8, imp.sym_name, "random_get")) {
+                @panic("TODO implement random_get");
+            } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_times")) {
+                @panic("TODO implement fd_filestat_set_times");
+            } else if (mem.eql(u8, imp.sym_name, "environ_sizes_get")) {
+                @panic("TODO implement environ_sizes_get");
+            } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
+                @panic("TODO implement environ_get");
+            } else if (mem.eql(u8, imp.sym_name, "fd_fdstat_get")) {
+                @panic("TODO implement fd_fdstat_get");
+            } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
+                @panic("TODO implement path_filestat_get");
+            } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
+                @panic("TODO implement path_create_directory");
+            } else if (mem.eql(u8, imp.sym_name, "path_rename")) {
+                @panic("TODO implement path_rename");
+            } else if (mem.eql(u8, imp.sym_name, "fd_readdir")) {
+                @panic("TODO implement fd_readdir");
+            } else if (mem.eql(u8, imp.sym_name, "fd_write")) {
+                @panic("TODO implement fd_write");
+            } else if (mem.eql(u8, imp.sym_name, "path_open")) {
+                @panic("TODO implement path_open");
+            } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
+                @panic("TODO implement clock_time_get");
+            } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
+                @panic("TODO implement fd_pread");
+            } else if (mem.eql(u8, imp.sym_name, "path_remove_directory")) {
+                @panic("TODO implement path_remove_directory");
+            } else if (mem.eql(u8, imp.sym_name, "path_unlink_file")) {
+                @panic("TODO implement path_unlink_file");
+            } else {
+                std.debug.panic("unhandled import: {s}", .{imp.sym_name});
+            }
+        }
+        const fn_idx = fn_id - @intCast(u32, e.imports.len);
         const module_bytes = e.module_bytes;
         const func = e.functions[fn_idx];
         var i: u32 = e.types[func.type_idx];
@@ -201,7 +284,7 @@ const Exec = struct {
         e.push(Frame, e.current_frame);
 
         e.current_frame = .{
-            .func = fn_idx,
+            .fn_idx = fn_idx,
             .pc = i,
             .stack_begin = e.stack_top,
             .locals_begin = locals_begin,
@@ -225,19 +308,32 @@ const Exec = struct {
         while (true) {
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
+            std.log.debug("stack_top={d} pc={d}, op={s}", .{
+                stack[e.stack_top].i32, pc.*, @tagName(op),
+            });
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
                 .nop => {},
-                .block => @panic("unhandled opcode: block"),
+                .block => {
+                    if (module_bytes[pc.*] == 0x40) {
+                        pc.* += 1;
+                    } else {
+                        const valtype = readVarInt(module_bytes, pc, u32);
+                        _ = valtype;
+                    }
+                },
                 .loop => @panic("unhandled opcode: loop"),
                 .@"if" => @panic("unhandled opcode: if"),
                 .@"else" => @panic("unhandled opcode: else"),
-                .end => @panic("unhandled opcode: end"),
+                .end => {},
                 .br => @panic("unhandled opcode: br"),
                 .br_if => @panic("unhandled opcode: br_if"),
                 .br_table => @panic("unhandled opcode: br_table"),
                 .@"return" => @panic("unhandled opcode: return"),
-                .call => @panic("unhandled opcode: call"),
+                .call => {
+                    const fn_id = readVarInt(module_bytes, pc, u32);
+                    e.initCall(fn_id);
+                },
                 .call_indirect => @panic("unhandled opcode: call_indirect"),
                 .drop => @panic("unhandled opcode: drop"),
                 .select => @panic("unhandled opcode: select"),
@@ -258,32 +354,163 @@ const Exec = struct {
                     const idx = readVarInt(module_bytes, pc, u32);
                     e.push(Value, e.globals[idx]);
                 },
-                .global_set => @panic("unhandled opcode: global_set"),
-                .i32_load => @panic("unhandled opcode: i32_load"),
-                .i64_load => @panic("unhandled opcode: i64_load"),
-                .f32_load => @panic("unhandled opcode: f32_load"),
-                .f64_load => @panic("unhandled opcode: f64_load"),
-                .i32_load8_s => @panic("unhandled opcode: i32_load8_s"),
-                .i32_load8_u => @panic("unhandled opcode: i32_load8_u"),
-                .i32_load16_s => @panic("unhandled opcode: i32_load16_s"),
-                .i32_load16_u => @panic("unhandled opcode: i32_load16_u"),
-                .i64_load8_s => @panic("unhandled opcode: i64_load8_s"),
-                .i64_load8_u => @panic("unhandled opcode: i64_load8_u"),
-                .i64_load16_s => @panic("unhandled opcode: i64_load16_s"),
-                .i64_load16_u => @panic("unhandled opcode: i64_load16_u"),
-                .i64_load32_s => @panic("unhandled opcode: i64_load32_s"),
-                .i64_load32_u => @panic("unhandled opcode: i64_load32_u"),
-                .i32_store => @panic("unhandled opcode: i32_store"),
-                .i64_store => @panic("unhandled opcode: i64_store"),
-                .f32_store => @panic("unhandled opcode: f32_store"),
-                .f64_store => @panic("unhandled opcode: f64_store"),
-                .i32_store8 => @panic("unhandled opcode: i32_store8"),
-                .i32_store16 => @panic("unhandled opcode: i32_store16"),
-                .i64_store8 => @panic("unhandled opcode: i64_store8"),
-                .i64_store16 => @panic("unhandled opcode: i64_store16"),
-                .i64_store32 => @panic("unhandled opcode: i64_store32"),
-                .memory_size => @panic("unhandled opcode: memory_size"),
-                .memory_grow => @panic("unhandled opcode: memory_grow"),
+                .global_set => {
+                    const idx = readVarInt(module_bytes, pc, u32);
+                    e.globals[idx] = e.pop();
+                },
+                .i32_load => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.push(Value, .{ .i32 = mem.readIntLittle(i32, e.memory[offset..][0..4]) });
+                },
+                .i64_load => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.push(Value, .{ .i64 = mem.readIntLittle(i64, e.memory[offset..][0..8]) });
+                },
+                .f32_load => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(u32, e.memory[offset..][0..4]);
+                    e.push(Value, .{ .f32 = @bitCast(f32, int) });
+                },
+                .f64_load => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(u64, e.memory[offset..][0..8]);
+                    e.push(Value, .{ .f64 = @bitCast(f64, int) });
+                },
+                .i32_load8_s => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.push(Value, .{ .i32 = @bitCast(i8, e.memory[offset]) });
+                },
+                .i32_load8_u => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.push(Value, .{ .u32 = e.memory[offset] });
+                },
+                .i32_load16_s => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(i16, e.memory[offset..][0..2]);
+                    e.push(Value, .{ .i32 = int });
+                },
+                .i32_load16_u => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(u16, e.memory[offset..][0..2]);
+                    e.push(Value, .{ .u32 = int });
+                },
+                .i64_load8_s => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.push(Value, .{ .i64 = @bitCast(i8, e.memory[offset]) });
+                },
+                .i64_load8_u => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.push(Value, .{ .u64 = e.memory[offset] });
+                },
+                .i64_load16_s => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(i16, e.memory[offset..][0..2]);
+                    e.push(Value, .{ .i64 = int });
+                },
+                .i64_load16_u => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(u16, e.memory[offset..][0..2]);
+                    e.push(Value, .{ .u64 = int });
+                },
+                .i64_load32_s => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(i32, e.memory[offset..][0..4]);
+                    e.push(Value, .{ .i64 = int });
+                },
+                .i64_load32_u => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = mem.readIntLittle(u32, e.memory[offset..][0..4]);
+                    e.push(Value, .{ .u64 = int });
+                },
+                .i32_store => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    mem.writeIntLittle(i32, e.memory[offset..][0..4], e.pop().i32);
+                },
+                .i64_store => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    mem.writeIntLittle(i64, e.memory[offset..][0..8], e.pop().i64);
+                },
+                .f32_store => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = @bitCast(u32, e.pop().f32);
+                    mem.writeIntLittle(u32, e.memory[offset..][0..4], int);
+                },
+                .f64_store => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const int = @bitCast(u64, e.pop().f64);
+                    mem.writeIntLittle(u64, e.memory[offset..][0..8], int);
+                },
+                .i32_store8 => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.memory[offset] = @truncate(u8, e.pop().u32);
+                },
+                .i32_store16 => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const small = @truncate(u16, e.pop().u32);
+                    mem.writeIntLittle(u16, e.memory[offset..][0..2], small);
+                },
+                .i64_store8 => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    e.memory[offset] = @truncate(u8, e.pop().u64);
+                },
+                .i64_store16 => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const small = @truncate(u16, e.pop().u64);
+                    mem.writeIntLittle(u16, e.memory[offset..][0..2], small);
+                },
+                .i64_store32 => {
+                    const alignment = readVarInt(module_bytes, pc, u32);
+                    _ = alignment;
+                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
+                    const small = @truncate(u32, e.pop().u64);
+                    mem.writeIntLittle(u32, e.memory[offset..][0..4], small);
+                },
+                .memory_size => {},
+                .memory_grow => {},
                 .i32_const => {
                     const x = readVarInt(module_bytes, pc, i32);
                     e.push(Value, .{ .i32 = x });
@@ -473,7 +700,7 @@ const Exec = struct {
 };
 
 const Frame = extern struct {
-    func: u32,
+    fn_idx: u32,
     /// Points directly to an instruction in module_bytes.
     pc: u32,
     stack_begin: u32,
@@ -539,4 +766,9 @@ fn readFloat64(bytes: []const u8, i: *u32) f64 {
     const result_ptr = @ptrCast(*align(1) const f64, bytes[i.*..][0..8]);
     i.* += 8;
     return result_ptr.*;
+}
+
+fn wasi_args_sizes_get(argc: u32, argv_buf_size: u32) u32 {
+    std.log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
+    @panic("TODO");
 }
