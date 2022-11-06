@@ -157,6 +157,7 @@ pub fn main() !void {
         .globals = globals,
         .memory = memory,
         .imports = imports,
+        .args = args[1..],
     };
     exec.initCall(start_fn_idx);
     exec.run();
@@ -190,67 +191,12 @@ const Exec = struct {
     globals: []Value,
     memory: []u8,
     imports: []const Import,
+    args: []const []const u8,
 
     fn initCall(e: *Exec, fn_id: u32) void {
         if (fn_id < e.imports.len) {
             const imp = e.imports[fn_id];
-            if (mem.eql(u8, imp.sym_name, "fd_prestat_get")) {
-                @panic("TODO implement fd_prestat_get");
-            } else if (mem.eql(u8, imp.sym_name, "fd_prestat_dir_name")) {
-                @panic("TODO implement fd_prestat_dir_name");
-            } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
-                @panic("TODO implement proc_exit");
-            } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
-                e.stack_top -= 2;
-                e.push(Value, .{ .u32 = wasi_args_sizes_get(
-                    stack[e.stack_top + 1].u32,
-                    stack[e.stack_top + 2].u32,
-                ) });
-            } else if (mem.eql(u8, imp.sym_name, "args_get")) {
-                @panic("TODO implement args_get");
-            } else if (mem.eql(u8, imp.sym_name, "fd_close")) {
-                @panic("TODO implement fd_close");
-            } else if (mem.eql(u8, imp.sym_name, "fd_read")) {
-                @panic("TODO implement fd_read");
-            } else if (mem.eql(u8, imp.sym_name, "fd_filestat_get")) {
-                @panic("TODO implement fd_filestat_get");
-            } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_size")) {
-                @panic("TODO implement fd_filestat_set_size");
-            } else if (mem.eql(u8, imp.sym_name, "fd_pwrite")) {
-                @panic("TODO implement fd_pwrite");
-            } else if (mem.eql(u8, imp.sym_name, "random_get")) {
-                @panic("TODO implement random_get");
-            } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_times")) {
-                @panic("TODO implement fd_filestat_set_times");
-            } else if (mem.eql(u8, imp.sym_name, "environ_sizes_get")) {
-                @panic("TODO implement environ_sizes_get");
-            } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
-                @panic("TODO implement environ_get");
-            } else if (mem.eql(u8, imp.sym_name, "fd_fdstat_get")) {
-                @panic("TODO implement fd_fdstat_get");
-            } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
-                @panic("TODO implement path_filestat_get");
-            } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
-                @panic("TODO implement path_create_directory");
-            } else if (mem.eql(u8, imp.sym_name, "path_rename")) {
-                @panic("TODO implement path_rename");
-            } else if (mem.eql(u8, imp.sym_name, "fd_readdir")) {
-                @panic("TODO implement fd_readdir");
-            } else if (mem.eql(u8, imp.sym_name, "fd_write")) {
-                @panic("TODO implement fd_write");
-            } else if (mem.eql(u8, imp.sym_name, "path_open")) {
-                @panic("TODO implement path_open");
-            } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
-                @panic("TODO implement clock_time_get");
-            } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
-                @panic("TODO implement fd_pread");
-            } else if (mem.eql(u8, imp.sym_name, "path_remove_directory")) {
-                @panic("TODO implement path_remove_directory");
-            } else if (mem.eql(u8, imp.sym_name, "path_unlink_file")) {
-                @panic("TODO implement path_unlink_file");
-            } else {
-                std.debug.panic("unhandled import: {s}", .{imp.sym_name});
-            }
+            return callImport(e, imp);
         }
         const fn_idx = fn_id - @intCast(u32, e.imports.len);
         const module_bytes = e.module_bytes;
@@ -289,6 +235,67 @@ const Exec = struct {
             .stack_begin = e.stack_top,
             .locals_begin = locals_begin,
         };
+    }
+
+    fn callImport(e: *Exec, imp: Import) void {
+        if (mem.eql(u8, imp.sym_name, "fd_prestat_get")) {
+            @panic("TODO implement fd_prestat_get");
+        } else if (mem.eql(u8, imp.sym_name, "fd_prestat_dir_name")) {
+            @panic("TODO implement fd_prestat_dir_name");
+        } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
+            @panic("TODO implement proc_exit");
+        } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
+            e.stack_top -= 2;
+            e.push(Value, .{ .u32 = @enumToInt(wasi_args_sizes_get(
+                e,
+                stack[e.stack_top + 1].u32,
+                stack[e.stack_top + 2].u32,
+            )) });
+        } else if (mem.eql(u8, imp.sym_name, "args_get")) {
+            @panic("TODO implement args_get");
+        } else if (mem.eql(u8, imp.sym_name, "fd_close")) {
+            @panic("TODO implement fd_close");
+        } else if (mem.eql(u8, imp.sym_name, "fd_read")) {
+            @panic("TODO implement fd_read");
+        } else if (mem.eql(u8, imp.sym_name, "fd_filestat_get")) {
+            @panic("TODO implement fd_filestat_get");
+        } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_size")) {
+            @panic("TODO implement fd_filestat_set_size");
+        } else if (mem.eql(u8, imp.sym_name, "fd_pwrite")) {
+            @panic("TODO implement fd_pwrite");
+        } else if (mem.eql(u8, imp.sym_name, "random_get")) {
+            @panic("TODO implement random_get");
+        } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_times")) {
+            @panic("TODO implement fd_filestat_set_times");
+        } else if (mem.eql(u8, imp.sym_name, "environ_sizes_get")) {
+            @panic("TODO implement environ_sizes_get");
+        } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
+            @panic("TODO implement environ_get");
+        } else if (mem.eql(u8, imp.sym_name, "fd_fdstat_get")) {
+            @panic("TODO implement fd_fdstat_get");
+        } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
+            @panic("TODO implement path_filestat_get");
+        } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
+            @panic("TODO implement path_create_directory");
+        } else if (mem.eql(u8, imp.sym_name, "path_rename")) {
+            @panic("TODO implement path_rename");
+        } else if (mem.eql(u8, imp.sym_name, "fd_readdir")) {
+            @panic("TODO implement fd_readdir");
+        } else if (mem.eql(u8, imp.sym_name, "fd_write")) {
+            @panic("TODO implement fd_write");
+        } else if (mem.eql(u8, imp.sym_name, "path_open")) {
+            @panic("TODO implement path_open");
+        } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
+            @panic("TODO implement clock_time_get");
+        } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
+            @panic("TODO implement fd_pread");
+        } else if (mem.eql(u8, imp.sym_name, "path_remove_directory")) {
+            @panic("TODO implement path_remove_directory");
+        } else if (mem.eql(u8, imp.sym_name, "path_unlink_file")) {
+            @panic("TODO implement path_unlink_file");
+        } else {
+            std.debug.panic("unhandled import: {s}", .{imp.sym_name});
+        }
     }
 
     fn push(e: *Exec, comptime T: type, value: T) void {
@@ -768,7 +775,13 @@ fn readFloat64(bytes: []const u8, i: *u32) f64 {
     return result_ptr.*;
 }
 
-fn wasi_args_sizes_get(argc: u32, argv_buf_size: u32) u32 {
+fn wasi_args_sizes_get(e: *Exec, argc: u32, argv_buf_size: u32) std.os.wasi.errno_t {
     std.log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
-    @panic("TODO");
+    mem.writeIntLittle(u32, e.memory[argc..][0..4], @intCast(u32, e.args.len));
+    var buf_size: usize = 0;
+    for (e.args) |arg| {
+        buf_size += arg.len + 1;
+    }
+    mem.writeIntLittle(u32, e.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
+    return .SUCCESS;
 }
