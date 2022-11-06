@@ -116,12 +116,32 @@ pub fn main() !void {
         break :t types;
     };
 
+    // Allocate and initialize globals.
+    const globals = g: {
+        i = section_starts[@enumToInt(wasm.Section.global)];
+        const globals_len = readVarInt(module_bytes, &i, u32);
+        const globals = try arena.alloc(Value, globals_len);
+        for (globals) |*global| {
+            const content_type = readVarInt(module_bytes, &i, wasm.Valtype);
+            const mutability = readVarInt(module_bytes, &i, Mutability);
+            assert(mutability == .@"var");
+            assert(content_type == .i32);
+            const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
+            i += 1;
+            assert(opcode == .i32_const);
+            const init = readVarInt(module_bytes, &i, i32);
+            global.* = .{ .i32 = init };
+        }
+        break :g globals;
+    };
+
     var exec: Exec = .{
         .section_starts = section_starts,
         .module_bytes = module_bytes,
         .stack_top = 0,
         .functions = functions,
         .types = types,
+        .globals = globals,
     };
     exec.initCall(start_fn_idx);
     exec.run();
@@ -129,6 +149,8 @@ pub fn main() !void {
 
 const section_count = @typeInfo(wasm.Section).Enum.fields.len;
 var stack: [1 << 10]Value = undefined;
+
+const Mutability = enum { @"const", @"var" };
 
 const Function = struct {
     /// Index to start of code in module_bytes.
@@ -145,6 +167,7 @@ const Exec = struct {
     functions: []const Function,
     /// Type index to start of type in module_bytes.
     types: []const u32,
+    globals: []Value,
 
     fn initCall(e: *Exec, fn_idx: u32) void {
         const module_bytes = e.module_bytes;
@@ -191,11 +214,17 @@ const Exec = struct {
         e.stack_top += 1;
     }
 
+    fn pop(e: *Exec) Value {
+        e.stack_top -= 1;
+        return stack[e.stack_top + 1];
+    }
+
     fn run(e: *Exec) noreturn {
         const module_bytes = e.module_bytes;
+        const pc = &e.current_frame.pc;
         while (true) {
-            const op = @intToEnum(wasm.Opcode, module_bytes[e.current_frame.pc]);
-            e.current_frame.pc += 1;
+            const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
+            pc.* += 1;
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
                 .nop => {},
@@ -212,10 +241,23 @@ const Exec = struct {
                 .call_indirect => @panic("unhandled opcode: call_indirect"),
                 .drop => @panic("unhandled opcode: drop"),
                 .select => @panic("unhandled opcode: select"),
-                .local_get => @panic("unhandled opcode: local_get"),
-                .local_set => @panic("unhandled opcode: local_set"),
-                .local_tee => @panic("unhandled opcode: local_tee"),
-                .global_get => @panic("unhandled opcode: global_get"),
+                .local_get => {
+                    const idx = readVarInt(module_bytes, pc, u32);
+                    const val = stack[idx + e.current_frame.locals_begin];
+                    e.push(Value, val);
+                },
+                .local_set => {
+                    const idx = readVarInt(module_bytes, pc, u32);
+                    stack[idx + e.current_frame.locals_begin] = e.pop();
+                },
+                .local_tee => {
+                    const idx = readVarInt(module_bytes, pc, u32);
+                    stack[idx + e.current_frame.locals_begin] = stack[e.stack_top];
+                },
+                .global_get => {
+                    const idx = readVarInt(module_bytes, pc, u32);
+                    e.push(Value, e.globals[idx]);
+                },
                 .global_set => @panic("unhandled opcode: global_set"),
                 .i32_load => @panic("unhandled opcode: i32_load"),
                 .i64_load => @panic("unhandled opcode: i64_load"),
@@ -242,21 +284,65 @@ const Exec = struct {
                 .i64_store32 => @panic("unhandled opcode: i64_store32"),
                 .memory_size => @panic("unhandled opcode: memory_size"),
                 .memory_grow => @panic("unhandled opcode: memory_grow"),
-                .i32_const => @panic("unhandled opcode: i32_const"),
-                .i64_const => @panic("unhandled opcode: i64_const"),
-                .f32_const => @panic("unhandled opcode: f32_const"),
-                .f64_const => @panic("unhandled opcode: f64_const"),
-                .i32_eqz => @panic("unhandled opcode: i32_eqz"),
-                .i32_eq => @panic("unhandled opcode: i32_eq"),
-                .i32_ne => @panic("unhandled opcode: i32_ne"),
-                .i32_lt_s => @panic("unhandled opcode: i32_lt_s"),
-                .i32_lt_u => @panic("unhandled opcode: i32_lt_u"),
-                .i32_gt_s => @panic("unhandled opcode: i32_gt_s"),
-                .i32_gt_u => @panic("unhandled opcode: i32_gt_u"),
-                .i32_le_s => @panic("unhandled opcode: i32_le_s"),
-                .i32_le_u => @panic("unhandled opcode: i32_le_u"),
-                .i32_ge_s => @panic("unhandled opcode: i32_ge_s"),
-                .i32_ge_u => @panic("unhandled opcode: i32_ge_u"),
+                .i32_const => {
+                    const x = readVarInt(module_bytes, pc, i32);
+                    e.push(Value, .{ .i32 = x });
+                },
+                .i64_const => {
+                    const x = readVarInt(module_bytes, pc, i64);
+                    e.push(Value, .{ .i64 = x });
+                },
+                .f32_const => {
+                    const x = readFloat32(module_bytes, pc);
+                    e.push(Value, .{ .f32 = x });
+                },
+                .f64_const => {
+                    const x = readFloat64(module_bytes, pc);
+                    e.push(Value, .{ .f64 = x });
+                },
+                .i32_eqz => {
+                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 == 0);
+                },
+                .i32_eq => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 == rhs.i32);
+                },
+                .i32_ne => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 != rhs.i32);
+                },
+                .i32_lt_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 < rhs.i32);
+                },
+                .i32_lt_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 < rhs.u32);
+                },
+                .i32_gt_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 > rhs.i32);
+                },
+                .i32_gt_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 > rhs.u32);
+                },
+                .i32_le_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 <= rhs.i32);
+                },
+                .i32_le_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 <= rhs.u32);
+                },
+                .i32_ge_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 >= rhs.i32);
+                },
+                .i32_ge_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 >= rhs.u32);
+                },
                 .i64_eqz => @panic("unhandled opcode: i64_eqz"),
                 .i64_eq => @panic("unhandled opcode: i64_eq"),
                 .i64_ne => @panic("unhandled opcode: i64_ne"),
@@ -283,8 +369,14 @@ const Exec = struct {
                 .i32_clz => @panic("unhandled opcode: i32_clz"),
                 .i32_ctz => @panic("unhandled opcode: i32_ctz"),
                 .i32_popcnt => @panic("unhandled opcode: i32_popcnt"),
-                .i32_add => @panic("unhandled opcode: i32_add"),
-                .i32_sub => @panic("unhandled opcode: i32_sub"),
+                .i32_add => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 +%= rhs.i32;
+                },
+                .i32_sub => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 -%= rhs.i32;
+                },
                 .i32_mul => @panic("unhandled opcode: i32_mul"),
                 .i32_div_s => @panic("unhandled opcode: i32_div_s"),
                 .i32_div_u => @panic("unhandled opcode: i32_div_u"),
@@ -435,4 +527,16 @@ fn readName(bytes: []const u8, i: *u32) []const u8 {
     const result = bytes[i.*..][0..len];
     i.* += len;
     return result;
+}
+
+fn readFloat32(bytes: []const u8, i: *u32) f32 {
+    const result_ptr = @ptrCast(*align(1) const f32, bytes[i.*..][0..4]);
+    i.* += 4;
+    return result_ptr.*;
+}
+
+fn readFloat64(bytes: []const u8, i: *u32) f64 {
+    const result_ptr = @ptrCast(*align(1) const f64, bytes[i.*..][0..8]);
+    i.* += 8;
+    return result_ptr.*;
 }
