@@ -600,9 +600,16 @@ const Exec = struct {
                 .f64_gt => @panic("unhandled opcode: f64_gt"),
                 .f64_le => @panic("unhandled opcode: f64_le"),
                 .f64_ge => @panic("unhandled opcode: f64_ge"),
-                .i32_clz => @panic("unhandled opcode: i32_clz"),
-                .i32_ctz => @panic("unhandled opcode: i32_ctz"),
-                .i32_popcnt => @panic("unhandled opcode: i32_popcnt"),
+
+                .i32_clz => {
+                    stack[e.stack_top].u32 = @clz(stack[e.stack_top].u32);
+                },
+                .i32_ctz => {
+                    stack[e.stack_top].u32 = @ctz(stack[e.stack_top].u32);
+                },
+                .i32_popcnt => {
+                    stack[e.stack_top].u32 = @popCount(stack[e.stack_top].u32);
+                },
                 .i32_add => {
                     const rhs = e.pop();
                     stack[e.stack_top].i32 +%= rhs.i32;
@@ -611,37 +618,129 @@ const Exec = struct {
                     const rhs = e.pop();
                     stack[e.stack_top].i32 -%= rhs.i32;
                 },
-                .i32_mul => @panic("unhandled opcode: i32_mul"),
-                .i32_div_s => @panic("unhandled opcode: i32_div_s"),
-                .i32_div_u => @panic("unhandled opcode: i32_div_u"),
-                .i32_rem_s => @panic("unhandled opcode: i32_rem_s"),
-                .i32_rem_u => @panic("unhandled opcode: i32_rem_u"),
-                .i32_and => @panic("unhandled opcode: i32_and"),
-                .i32_or => @panic("unhandled opcode: i32_or"),
-                .i32_xor => @panic("unhandled opcode: i32_xor"),
-                .i32_shl => @panic("unhandled opcode: i32_shl"),
-                .i32_shr_s => @panic("unhandled opcode: i32_shr_s"),
-                .i32_shr_u => @panic("unhandled opcode: i32_shr_u"),
-                .i32_rotl => @panic("unhandled opcode: i32_rotl"),
-                .i32_rotr => @panic("unhandled opcode: i32_rotr"),
-                .i64_clz => @panic("unhandled opcode: i64_clz"),
-                .i64_ctz => @panic("unhandled opcode: i64_ctz"),
-                .i64_popcnt => @panic("unhandled opcode: i64_popcnt"),
-                .i64_add => @panic("unhandled opcode: i64_add"),
-                .i64_sub => @panic("unhandled opcode: i64_sub"),
-                .i64_mul => @panic("unhandled opcode: i64_mul"),
-                .i64_div_s => @panic("unhandled opcode: i64_div_s"),
-                .i64_div_u => @panic("unhandled opcode: i64_div_u"),
-                .i64_rem_s => @panic("unhandled opcode: i64_rem_s"),
-                .i64_rem_u => @panic("unhandled opcode: i64_rem_u"),
-                .i64_and => @panic("unhandled opcode: i64_and"),
-                .i64_or => @panic("unhandled opcode: i64_or"),
-                .i64_xor => @panic("unhandled opcode: i64_xor"),
-                .i64_shl => @panic("unhandled opcode: i64_shl"),
-                .i64_shr_s => @panic("unhandled opcode: i64_shr_s"),
-                .i64_shr_u => @panic("unhandled opcode: i64_shr_u"),
-                .i64_rotl => @panic("unhandled opcode: i64_rotl"),
-                .i64_rotr => @panic("unhandled opcode: i64_rotr"),
+                .i32_mul => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 *%= rhs.i32;
+                },
+                .i32_div_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 *%= rhs.i32;
+                },
+                .i32_div_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 *%= rhs.u32;
+                },
+                .i32_rem_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 = @rem(stack[e.stack_top].i32, rhs.i32);
+                },
+                .i32_rem_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 = @rem(stack[e.stack_top].u32, rhs.u32);
+                },
+                .i32_and => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 &= rhs.u32;
+                },
+                .i32_or => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 |= rhs.u32;
+                },
+                .i32_xor => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 ^= rhs.u32;
+                },
+                .i32_shl => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 <<= @truncate(u5, rhs.u32);
+                },
+                .i32_shr_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i32 >>= @truncate(u5, rhs.u32);
+                },
+                .i32_shr_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 >>= @truncate(u5, rhs.u32);
+                },
+                .i32_rotl => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 = std.math.rotl(u32, stack[e.stack_top].u32, rhs.u32);
+                },
+                .i32_rotr => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u32 = std.math.rotr(u32, stack[e.stack_top].u32, rhs.u32);
+                },
+
+                .i64_clz => {
+                    stack[e.stack_top].u64 = @clz(stack[e.stack_top].u64);
+                },
+                .i64_ctz => {
+                    stack[e.stack_top].u64 = @ctz(stack[e.stack_top].u64);
+                },
+                .i64_popcnt => {
+                    stack[e.stack_top].u64 = @popCount(stack[e.stack_top].u64);
+                },
+                .i64_add => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i64 +%= rhs.i64;
+                },
+                .i64_sub => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i64 -%= rhs.i64;
+                },
+                .i64_mul => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i64 *%= rhs.i64;
+                },
+                .i64_div_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i64 *%= rhs.i64;
+                },
+                .i64_div_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 *%= rhs.u64;
+                },
+                .i64_rem_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i64 = @rem(stack[e.stack_top].i64, rhs.i64);
+                },
+                .i64_rem_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 = @rem(stack[e.stack_top].u64, rhs.u64);
+                },
+                .i64_and => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 &= rhs.u64;
+                },
+                .i64_or => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 |= rhs.u64;
+                },
+                .i64_xor => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 ^= rhs.u64;
+                },
+                .i64_shl => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 <<= @truncate(u6, rhs.u64);
+                },
+                .i64_shr_s => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].i64 >>= @truncate(u6, rhs.u64);
+                },
+                .i64_shr_u => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 >>= @truncate(u6, rhs.u64);
+                },
+                .i64_rotl => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 = std.math.rotl(u64, stack[e.stack_top].u64, rhs.u64);
+                },
+                .i64_rotr => {
+                    const rhs = e.pop();
+                    stack[e.stack_top].u64 = std.math.rotr(u64, stack[e.stack_top].u64, rhs.u64);
+                },
+
                 .f32_abs => @panic("unhandled opcode: f32_abs"),
                 .f32_neg => @panic("unhandled opcode: f32_neg"),
                 .f32_ceil => @panic("unhandled opcode: f32_ceil"),
