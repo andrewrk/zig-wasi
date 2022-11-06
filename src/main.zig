@@ -148,10 +148,18 @@ pub fn main() !void {
         break :m memory;
     };
 
+    frames[0] = .{
+        .fn_idx = 0,
+        .pc = undefined,
+        .stack_begin = undefined,
+        .locals_begin = undefined,
+    };
+
     var exec: Exec = .{
-        .section_starts = section_starts,
         .module_bytes = module_bytes,
         .stack_top = 0,
+        .frames_index = 1,
+        .labels_index = 0,
         .functions = functions,
         .types = types,
         .globals = globals,
@@ -164,7 +172,21 @@ pub fn main() !void {
 }
 
 const section_count = @typeInfo(wasm.Section).Enum.fields.len;
-var stack: [1 << 10]Value = undefined;
+var stack: [1000]Value = undefined;
+var frames: [1000]Frame = undefined;
+var labels: [1000]Label = undefined;
+
+const Frame = struct {
+    fn_idx: u32,
+    /// Points directly to an instruction in module_bytes.
+    pc: u32,
+    stack_begin: u32,
+    locals_begin: u32,
+};
+
+const Label = struct {
+    br_pc: u32,
+};
 
 const Mutability = enum { @"const", @"var" };
 
@@ -181,10 +203,10 @@ const Import = struct {
 };
 
 const Exec = struct {
-    section_starts: [section_count]u32,
     stack_top: u32,
+    frames_index: u32,
+    labels_index: u32,
     module_bytes: []const u8,
-    current_frame: Frame = Frame.terminus(),
     functions: []const Function,
     /// Type index to start of type in module_bytes.
     types: []const u32,
@@ -225,11 +247,11 @@ const Exec = struct {
         }
 
         // Push zeroed locals to stack
-        mem.set(Value, stack[e.stack_top..][0..locals_count], Value{ .v128 = 0 });
+        mem.set(Value, stack[e.stack_top..][0..locals_count], Value{ .u64 = 0 });
         e.stack_top += locals_count;
-        e.push(Frame, e.current_frame);
 
-        e.current_frame = .{
+        e.frames_index += 1;
+        frames[e.frames_index] = .{
             .fn_idx = fn_idx,
             .pc = i,
             .stack_begin = e.stack_top,
@@ -246,7 +268,7 @@ const Exec = struct {
             @panic("TODO implement proc_exit");
         } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
             e.stack_top -= 2;
-            e.push(Value, .{ .u32 = @enumToInt(wasi_args_sizes_get(
+            e.push(.{ .u32 = @enumToInt(wasi_args_sizes_get(
                 e,
                 stack[e.stack_top + 1].u32,
                 stack[e.stack_top + 2].u32,
@@ -298,9 +320,8 @@ const Exec = struct {
         }
     }
 
-    fn push(e: *Exec, comptime T: type, value: T) void {
-        comptime assert(@sizeOf(T) == 16);
-        stack[e.stack_top] = @bitCast(Value, value);
+    fn push(e: *Exec, value: Value) void {
+        stack[e.stack_top] = value;
         e.stack_top += 1;
     }
 
@@ -311,8 +332,9 @@ const Exec = struct {
 
     fn run(e: *Exec) noreturn {
         const module_bytes = e.module_bytes;
-        const pc = &e.current_frame.pc;
         while (true) {
+            const frame = &frames[e.frames_index];
+            const pc = &frame.pc;
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
             std.log.debug("stack_top={d} pc={d}, op={s}", .{
@@ -325,8 +347,10 @@ const Exec = struct {
                     if (module_bytes[pc.*] == 0x40) {
                         pc.* += 1;
                     } else {
-                        const valtype = readVarInt(module_bytes, pc, u32);
-                        _ = valtype;
+                        // empirically there are no non-void blocks
+                        @panic("non-void block");
+                        //const valtype = readVarInt(module_bytes, pc, u32);
+                        //_ = valtype;
                     }
                 },
                 .loop => @panic("unhandled opcode: loop"),
@@ -346,20 +370,20 @@ const Exec = struct {
                 .select => @panic("unhandled opcode: select"),
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    const val = stack[idx + e.current_frame.locals_begin];
-                    e.push(Value, val);
+                    const val = stack[idx + frame.locals_begin];
+                    e.push(val);
                 },
                 .local_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    stack[idx + e.current_frame.locals_begin] = e.pop();
+                    stack[idx + frame.locals_begin] = e.pop();
                 },
                 .local_tee => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    stack[idx + e.current_frame.locals_begin] = stack[e.stack_top];
+                    stack[idx + frame.locals_begin] = stack[e.stack_top];
                 },
                 .global_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    e.push(Value, e.globals[idx]);
+                    e.push(e.globals[idx]);
                 },
                 .global_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
@@ -369,93 +393,93 @@ const Exec = struct {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.push(Value, .{ .i32 = mem.readIntLittle(i32, e.memory[offset..][0..4]) });
+                    e.push(.{ .i32 = mem.readIntLittle(i32, e.memory[offset..][0..4]) });
                 },
                 .i64_load => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.push(Value, .{ .i64 = mem.readIntLittle(i64, e.memory[offset..][0..8]) });
+                    e.push(.{ .i64 = mem.readIntLittle(i64, e.memory[offset..][0..8]) });
                 },
                 .f32_load => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(u32, e.memory[offset..][0..4]);
-                    e.push(Value, .{ .f32 = @bitCast(f32, int) });
+                    e.push(.{ .f32 = @bitCast(f32, int) });
                 },
                 .f64_load => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(u64, e.memory[offset..][0..8]);
-                    e.push(Value, .{ .f64 = @bitCast(f64, int) });
+                    e.push(.{ .f64 = @bitCast(f64, int) });
                 },
                 .i32_load8_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.push(Value, .{ .i32 = @bitCast(i8, e.memory[offset]) });
+                    e.push(.{ .i32 = @bitCast(i8, e.memory[offset]) });
                 },
                 .i32_load8_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.push(Value, .{ .u32 = e.memory[offset] });
+                    e.push(.{ .u32 = e.memory[offset] });
                 },
                 .i32_load16_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(i16, e.memory[offset..][0..2]);
-                    e.push(Value, .{ .i32 = int });
+                    e.push(.{ .i32 = int });
                 },
                 .i32_load16_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(u16, e.memory[offset..][0..2]);
-                    e.push(Value, .{ .u32 = int });
+                    e.push(.{ .u32 = int });
                 },
                 .i64_load8_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.push(Value, .{ .i64 = @bitCast(i8, e.memory[offset]) });
+                    e.push(.{ .i64 = @bitCast(i8, e.memory[offset]) });
                 },
                 .i64_load8_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.push(Value, .{ .u64 = e.memory[offset] });
+                    e.push(.{ .u64 = e.memory[offset] });
                 },
                 .i64_load16_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(i16, e.memory[offset..][0..2]);
-                    e.push(Value, .{ .i64 = int });
+                    e.push(.{ .i64 = int });
                 },
                 .i64_load16_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(u16, e.memory[offset..][0..2]);
-                    e.push(Value, .{ .u64 = int });
+                    e.push(.{ .u64 = int });
                 },
                 .i64_load32_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(i32, e.memory[offset..][0..4]);
-                    e.push(Value, .{ .i64 = int });
+                    e.push(.{ .i64 = int });
                 },
                 .i64_load32_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
                     const int = mem.readIntLittle(u32, e.memory[offset..][0..4]);
-                    e.push(Value, .{ .u64 = int });
+                    e.push(.{ .u64 = int });
                 },
                 .i32_store => {
                     const alignment = readVarInt(module_bytes, pc, u32);
@@ -520,19 +544,19 @@ const Exec = struct {
                 .memory_grow => {},
                 .i32_const => {
                     const x = readVarInt(module_bytes, pc, i32);
-                    e.push(Value, .{ .i32 = x });
+                    e.push(.{ .i32 = x });
                 },
                 .i64_const => {
                     const x = readVarInt(module_bytes, pc, i64);
-                    e.push(Value, .{ .i64 = x });
+                    e.push(.{ .i64 = x });
                 },
                 .f32_const => {
                     const x = readFloat32(module_bytes, pc);
-                    e.push(Value, .{ .f32 = x });
+                    e.push(.{ .f32 = x });
                 },
                 .f64_const => {
                     const x = readFloat64(module_bytes, pc);
-                    e.push(Value, .{ .f64 = x });
+                    e.push(.{ .f64 = x });
                 },
                 .i32_eqz => {
                     stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 == 0);
@@ -805,22 +829,6 @@ const Exec = struct {
     }
 };
 
-const Frame = extern struct {
-    fn_idx: u32,
-    /// Points directly to an instruction in module_bytes.
-    pc: u32,
-    stack_begin: u32,
-    locals_begin: u32,
-
-    pub fn terminus() Frame {
-        return @bitCast(Frame, @as(u128, 0));
-    }
-
-    pub fn isTerminus(f: Frame) bool {
-        return @bitCast(u128, f) == 0;
-    }
-};
-
 const Value = extern union {
     i32: i32,
     u32: u32,
@@ -828,7 +836,6 @@ const Value = extern union {
     u64: u64,
     f32: f32,
     f64: f64,
-    v128: i128,
 };
 
 const SectionPos = struct {
