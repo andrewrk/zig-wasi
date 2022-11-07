@@ -577,13 +577,23 @@ const Exec = struct {
                 stack[e.stack_top + 1].u32,
             )) });
         } else if (mem.eql(u8, imp.sym_name, "args_get")) {
-            @panic("TODO implement args_get");
+            e.stack_top -= 2;
+            e.push(.{ .u32 = @enumToInt(wasi_args_get(
+                e,
+                stack[e.stack_top + 0].u32,
+                stack[e.stack_top + 1].u32,
+            )) });
         } else if (mem.eql(u8, imp.sym_name, "fd_close")) {
             @panic("TODO implement fd_close");
         } else if (mem.eql(u8, imp.sym_name, "fd_read")) {
             @panic("TODO implement fd_read");
         } else if (mem.eql(u8, imp.sym_name, "fd_filestat_get")) {
-            @panic("TODO implement fd_filestat_get");
+            e.stack_top -= 2;
+            e.push(.{ .u32 = @enumToInt(wasi_fd_filestat_get(
+                e,
+                stack[e.stack_top + 0].i32,
+                stack[e.stack_top + 1].u32,
+            )) });
         } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_size")) {
             @panic("TODO implement fd_filestat_set_size");
         } else if (mem.eql(u8, imp.sym_name, "fd_pwrite")) {
@@ -1337,19 +1347,80 @@ fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) was
         const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
         const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
         const buf = e.memory[ptr..][0..len];
-        const written = os.write(preopen.host_fd, buf) catch |err| switch (err) {
-            error.AccessDenied => return .ACCES,
-            error.DiskQuota => return .DQUOT,
-            error.InputOutput => return .IO,
-            error.FileTooBig => return .FBIG,
-            error.NoSpaceLeft => return .NOSPC,
-            error.BrokenPipe => return .PIPE,
-            error.NotOpenForWriting => return .BADF,
-            else => @panic("unexpected error"),
-        };
+        const written = os.write(preopen.host_fd, buf) catch |err| return toWasiError(err);
         if (written == 0) break;
         total_written += written;
     }
     mem.writeIntLittle(u32, e.memory[nwritten..][0..4], @intCast(u32, total_written));
     return .SUCCESS;
+}
+
+/// extern fn fd_filestat_get(fd: fd_t, buf: *filestat_t) errno_t;
+/// const filestat_t = extern struct {
+///     dev: device_t, u64
+///     ino: inode_t, u64
+///     filetype: filetype_t, u8
+///     nlink: linkcount_t, u64
+///     size: filesize_t, u64
+///     atim: timestamp_t, u64
+///     mtim: timestamp_t, u64
+///     ctim: timestamp_t, u64
+/// };
+fn wasi_fd_filestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
+    log.debug("wasi_fd_filestat_get fd={d} buf={d}", .{ fd, buf });
+    const preopen = findPreopen(fd) orelse return .BADF;
+    const file = fs.File{ .handle = preopen.host_fd };
+    const stat = file.stat() catch |err| return toWasiError(err);
+    mem.writeIntLittle(u64, e.memory[buf + 0x00 ..][0..8], 0); // device
+    mem.writeIntLittle(u64, e.memory[buf + 0x10 ..][0..8], stat.inode);
+    mem.writeIntLittle(u64, e.memory[buf + 0x18 ..][0..8], @enumToInt(toWasiFileType(stat.kind)));
+    mem.writeIntLittle(u64, e.memory[buf + 0x20 ..][0..8], 1); // nlink
+    mem.writeIntLittle(u64, e.memory[buf + 0x28 ..][0..8], stat.size);
+    mem.writeIntLittle(u64, e.memory[buf + 0x30 ..][0..8], toWasiTimestamp(stat.atime));
+    mem.writeIntLittle(u64, e.memory[buf + 0x38 ..][0..8], toWasiTimestamp(stat.mtime));
+    mem.writeIntLittle(u64, e.memory[buf + 0x40 ..][0..8], toWasiTimestamp(stat.ctime));
+    return .SUCCESS;
+}
+
+/// extern fn args_get(argv: [*][*:0]u8, argv_buf: [*]u8) errno_t;
+fn wasi_args_get(e: *Exec, argv: u32, argv_buf: u32) wasi.errno_t {
+    log.debug("wasi_args_get argv={d} argv_buf={d}", .{ argv, argv_buf });
+    _ = e;
+    @panic("TODO");
+}
+
+fn toWasiTimestamp(ns: i128) u64 {
+    return @intCast(u64, ns);
+}
+
+fn toWasiError(err: anyerror) wasi.errno_t {
+    return switch (err) {
+        error.AccessDenied => .ACCES,
+        error.DiskQuota => .DQUOT,
+        error.InputOutput => .IO,
+        error.FileTooBig => .FBIG,
+        error.NoSpaceLeft => .NOSPC,
+        error.BrokenPipe => .PIPE,
+        error.NotOpenForWriting => .BADF,
+        error.SystemResources => .NOMEM,
+        else => std.debug.panic("unexpected error: {s}", .{@errorName(err)}),
+    };
+}
+
+fn toWasiFileType(kind: fs.File.Kind) wasi.filetype_t {
+    return switch (kind) {
+        .BlockDevice => .BLOCK_DEVICE,
+        .CharacterDevice => .CHARACTER_DEVICE,
+        .Directory => .DIRECTORY,
+        .SymLink => .SYMBOLIC_LINK,
+        .File => .REGULAR_FILE,
+        .Unknown => .UNKNOWN,
+
+        .NamedPipe,
+        .UnixDomainSocket,
+        .Whiteout,
+        .Door,
+        .EventPort,
+        => .UNKNOWN,
+    };
 }
