@@ -4,6 +4,8 @@ const assert = std.debug.assert;
 const fs = std.fs;
 const mem = std.mem;
 const wasm = std.wasm;
+const wasi = std.os.wasi;
+const os = std.os;
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -17,8 +19,19 @@ pub fn main() !void {
     const args = try process.argsAlloc(arena);
 
     const wasm_file = args[1];
+
     const ten_moogieboogies = 10 * 1024 * 1024;
     const module_bytes = try fs.cwd().readFileAlloc(arena, wasm_file, ten_moogieboogies);
+
+    const cwd = try fs.cwd().openDir(".", .{});
+    const cache_dir = try cwd.makeOpenPath("zig1-cache", .{});
+
+    addPreopen(0, "stdin", os.STDIN_FILENO);
+    addPreopen(1, "stdout", os.STDOUT_FILENO);
+    addPreopen(2, "stderr", os.STDERR_FILENO);
+    addPreopen(3, ".", cwd.fd);
+    addPreopen(4, "/cwd", cwd.fd);
+    addPreopen(5, "/cache", cache_dir.fd);
 
     var i: u32 = 0;
 
@@ -187,7 +200,7 @@ pub fn main() !void {
         .imports = imports,
         .args = args[1..],
     };
-    exec.initCall(start_fn_idx);
+    exec.call(start_fn_idx);
     exec.run();
 }
 
@@ -484,7 +497,7 @@ const Exec = struct {
         }
     }
 
-    fn initCall(e: *Exec, fn_id: u32) void {
+    fn call(e: *Exec, fn_id: u32) void {
         if (fn_id < e.imports.len) {
             const imp = e.imports[fn_id];
             return callImport(e, imp);
@@ -499,9 +512,6 @@ const Exec = struct {
         i += param_count;
         const return_arity = readVarInt(module_bytes, &i, u32);
         i += return_arity;
-        std.log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_arity: {d}", .{
-            fn_idx, func.type_idx, param_count, return_arity,
-        });
 
         const locals_begin = e.stack_top - param_count;
 
@@ -514,6 +524,10 @@ const Exec = struct {
             _ = local_type;
             locals_count += current_count;
         }
+
+        std.log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_arity: {d}, locals_begin: {d}, locals_count: {d}", .{
+            fn_idx, func.type_idx, param_count, return_arity, locals_begin, locals_count,
+        });
 
         // Push zeroed locals to stack
         mem.set(Value, stack[e.stack_top..][0..locals_count], Value{ .u64 = 0 });
@@ -534,11 +548,23 @@ const Exec = struct {
 
     fn callImport(e: *Exec, imp: Import) void {
         if (mem.eql(u8, imp.sym_name, "fd_prestat_get")) {
-            @panic("TODO implement fd_prestat_get");
+            e.stack_top -= 2;
+            e.push(.{ .u32 = @enumToInt(wasi_fd_prestat_get(
+                e,
+                stack[e.stack_top + 0].i32,
+                stack[e.stack_top + 1].u32,
+            )) });
         } else if (mem.eql(u8, imp.sym_name, "fd_prestat_dir_name")) {
-            @panic("TODO implement fd_prestat_dir_name");
+            e.stack_top -= 3;
+            e.push(.{ .u32 = @enumToInt(wasi_fd_prestat_dir_name(
+                e,
+                stack[e.stack_top + 0].i32,
+                stack[e.stack_top + 1].u32,
+                stack[e.stack_top + 2].u32,
+            )) });
         } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
-            @panic("TODO implement proc_exit");
+            std.process.exit(@intCast(u8, e.pop().u32));
+            unreachable;
         } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
             e.stack_top -= 2;
             e.push(.{ .u32 = @enumToInt(wasi_args_sizes_get(
@@ -577,7 +603,14 @@ const Exec = struct {
         } else if (mem.eql(u8, imp.sym_name, "fd_readdir")) {
             @panic("TODO implement fd_readdir");
         } else if (mem.eql(u8, imp.sym_name, "fd_write")) {
-            @panic("TODO implement fd_write");
+            e.stack_top -= 4;
+            e.push(.{ .u32 = @enumToInt(wasi_fd_write(
+                e,
+                stack[e.stack_top + 0].i32,
+                stack[e.stack_top + 1].u32,
+                stack[e.stack_top + 2].u32,
+                stack[e.stack_top + 3].u32,
+            )) });
         } else if (mem.eql(u8, imp.sym_name, "path_open")) {
             @panic("TODO implement path_open");
         } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
@@ -610,9 +643,13 @@ const Exec = struct {
             const pc = &frame.pc;
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
-            std.log.debug("stack[{d}]={d} pc={d}, op={s}", .{
-                e.stack_top - 1, stack[e.stack_top - 1].i32, pc.*, @tagName(op),
-            });
+            if (e.stack_top > 0) {
+                std.log.debug("stack[{d}]={d} pc={d}, op={s}", .{
+                    e.stack_top - 1, stack[e.stack_top - 1].i32, pc.*, @tagName(op),
+                });
+            } else {
+                std.log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
+            }
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
                 .nop => {},
@@ -637,10 +674,9 @@ const Exec = struct {
                 .@"if" => @panic("unhandled opcode: if"),
                 .@"else" => @panic("unhandled opcode: else"),
                 .end => {
-                    frame.labels_end -= 1;
                     const prev_frame = &frames[e.frames_index - 1];
-                    std.log.debug("labels_end {d}=>{d} (base: {d}) arity={d}", .{
-                        frame.labels_end + 1, frame.labels_end, prev_frame.labels_end, frame.return_arity,
+                    std.log.debug("labels_end {d}-- (base: {d}) arity={d}", .{
+                        frame.labels_end, prev_frame.labels_end, frame.return_arity,
                     });
                     if (frame.labels_end == prev_frame.labels_end) {
                         const n = frame.return_arity;
@@ -649,9 +685,8 @@ const Exec = struct {
                         mem.copy(Value, dst, src);
                         e.stack_top = frame.locals_begin + n;
                         e.frames_index -= 1;
-                        std.log.debug("end ret, stack[{d}]={d}", .{
-                            e.stack_top, stack[e.stack_top].i32,
-                        });
+                    } else {
+                        frame.labels_end -= 1;
                     }
                 },
                 .br => {
@@ -665,12 +700,25 @@ const Exec = struct {
                     }
                 },
                 .br_table => @panic("unhandled opcode: br_table"),
-                .@"return" => @panic("unhandled opcode: return"),
+                .@"return" => {
+                    const n = frame.return_arity;
+                    const dst = stack[frame.locals_begin..][0..n];
+                    const src = stack[e.stack_top - n ..][0..n];
+                    mem.copy(Value, dst, src);
+                    e.stack_top = frame.locals_begin + n;
+                    e.frames_index -= 1;
+                },
                 .call => {
                     const fn_id = readVarInt(module_bytes, pc, u32);
-                    e.initCall(fn_id);
+                    e.call(fn_id);
                 },
-                .call_indirect => @panic("unhandled opcode: call_indirect"),
+                .call_indirect => {
+                    const table_idx = readVarInt(module_bytes, pc, u32);
+                    const type_idx = readVarInt(module_bytes, pc, u32);
+                    std.log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
+                    const fn_id = e.pop().u32;
+                    e.call(fn_id);
+                },
                 .drop => {
                     e.stack_top -= 1;
                 },
@@ -683,15 +731,18 @@ const Exec = struct {
                 },
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
+                    //std.log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
                     const val = stack[idx + frame.locals_begin];
                     e.push(val);
                 },
                 .local_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
+                    //std.log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     stack[idx + frame.locals_begin] = e.pop();
                 },
                 .local_tee => {
                     const idx = readVarInt(module_bytes, pc, u32);
+                    //std.log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     stack[idx + frame.locals_begin] = stack[e.stack_top - 1];
                 },
                 .global_get => {
@@ -739,7 +790,6 @@ const Exec = struct {
                     _ = alignment;
                     const arg = e.pop().u32;
                     const offset = readVarInt(module_bytes, pc, u32);
-                    std.log.debug("offset={d} arg={d}", .{ offset, arg });
                     e.push(.{ .u32 = e.memory[offset + arg] });
                 },
                 .i32_load16_s => {
@@ -797,62 +847,66 @@ const Exec = struct {
                     e.push(.{ .u64 = int });
                 },
                 .i32_store => {
+                    const operand = e.pop().i32;
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    mem.writeIntLittle(i32, e.memory[offset..][0..4], e.pop().i32);
+                    mem.writeIntLittle(i32, e.memory[offset..][0..4], operand);
                 },
                 .i64_store => {
+                    const operand = e.pop().i64;
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    mem.writeIntLittle(i64, e.memory[offset..][0..8], e.pop().i64);
+                    mem.writeIntLittle(i64, e.memory[offset..][0..8], operand);
                 },
                 .f32_store => {
+                    const int = @bitCast(u32, e.pop().f32);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    const int = @bitCast(u32, e.pop().f32);
                     mem.writeIntLittle(u32, e.memory[offset..][0..4], int);
                 },
                 .f64_store => {
+                    const int = @bitCast(u64, e.pop().f64);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    const int = @bitCast(u64, e.pop().f64);
                     mem.writeIntLittle(u64, e.memory[offset..][0..8], int);
                 },
                 .i32_store8 => {
+                    const operand = e.pop().u32;
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.memory[offset] = @truncate(u8, e.pop().u32);
+                    e.memory[offset] = @truncate(u8, operand);
                 },
                 .i32_store16 => {
+                    const small = @truncate(u16, e.pop().u32);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    const small = @truncate(u16, e.pop().u32);
                     mem.writeIntLittle(u16, e.memory[offset..][0..2], small);
                 },
                 .i64_store8 => {
+                    const operand = @truncate(u8, e.pop().u64);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.memory[offset] = @truncate(u8, e.pop().u64);
+                    e.memory[offset] = operand;
                 },
                 .i64_store16 => {
+                    const small = @truncate(u16, e.pop().u64);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    const small = @truncate(u16, e.pop().u64);
                     mem.writeIntLittle(u16, e.memory[offset..][0..2], small);
                 },
                 .i64_store32 => {
+                    const small = @truncate(u32, e.pop().u64);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    const small = @truncate(u32, e.pop().u64);
                     mem.writeIntLittle(u32, e.memory[offset..][0..4], small);
                 },
                 .memory_size => {
@@ -1200,7 +1254,8 @@ fn readFloat64(bytes: []const u8, i: *u32) f64 {
     return result_ptr.*;
 }
 
-fn wasi_args_sizes_get(e: *Exec, argc: u32, argv_buf_size: u32) std.os.wasi.errno_t {
+/// fn args_sizes_get(argc: *usize, argv_buf_size: *usize) errno_t;
+fn wasi_args_sizes_get(e: *Exec, argc: u32, argv_buf_size: u32) wasi.errno_t {
     std.log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
     mem.writeIntLittle(u32, e.memory[argc..][0..4], @intCast(u32, e.args.len));
     var buf_size: usize = 0;
@@ -1208,5 +1263,88 @@ fn wasi_args_sizes_get(e: *Exec, argc: u32, argv_buf_size: u32) std.os.wasi.errn
         buf_size += arg.len + 1;
     }
     mem.writeIntLittle(u32, e.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
+    return .SUCCESS;
+}
+
+var preopens_buffer: [10]Preopen = undefined;
+var preopens_len: usize = 0;
+
+const Preopen = struct {
+    wasi_fd: i32,
+    name: []const u8,
+    host_fd: os.fd_t,
+};
+
+fn addPreopen(wasi_fd: i32, name: []const u8, host_fd: os.fd_t) void {
+    preopens_buffer[preopens_len] = .{
+        .wasi_fd = wasi_fd,
+        .name = name,
+        .host_fd = host_fd,
+    };
+    preopens_len += 1;
+}
+
+fn findPreopen(wasi_fd: i32) ?Preopen {
+    for (preopens_buffer[0..preopens_len]) |preopen| {
+        if (preopen.wasi_fd == wasi_fd) {
+            return preopen;
+        }
+    }
+    return null;
+}
+
+/// fn fd_prestat_get(fd: fd_t, buf: *prestat_t) errno_t;
+/// const prestat_t = extern struct {
+///     pr_type: u8,
+///     u: usize,
+/// };
+fn wasi_fd_prestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
+    std.log.debug("wasi_fd_prestat_get fd={d} buf={d}", .{ fd, buf });
+    const preopen = findPreopen(fd) orelse return .BADF;
+    mem.writeIntLittle(u32, e.memory[buf + 0 ..][0..4], 0);
+    mem.writeIntLittle(u32, e.memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
+    return .SUCCESS;
+}
+
+/// fn fd_prestat_dir_name(fd: fd_t, path: [*]u8, path_len: usize) errno_t;
+fn wasi_fd_prestat_dir_name(e: *Exec, fd: i32, path: u32, path_len: u32) wasi.errno_t {
+    std.log.debug("wasi_fd_prestat_dir_name fd={d} path={d} path_len={d}", .{ fd, path, path_len });
+    const preopen = findPreopen(fd) orelse return .BADF;
+    assert(path_len == preopen.name.len);
+    mem.copy(u8, e.memory[path..], preopen.name);
+    return .SUCCESS;
+}
+
+/// extern fn fd_write(fd: fd_t, iovs: [*]const ciovec_t, iovs_len: usize, nwritten: *usize) errno_t;
+/// const ciovec_t = extern struct {
+///     base: [*]const u8,
+///     len: usize,
+/// };
+fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) wasi.errno_t {
+    std.log.debug("wasi_fd_write fd={d} iovs={d} iovs_len={d} nwritten={d}", .{
+        fd, iovs, iovs_len, nwritten,
+    });
+    const preopen = findPreopen(fd) orelse return .BADF;
+    var i: u32 = 0;
+    var total_written: usize = 0;
+    while (i < iovs_len) : (i += 1) {
+        const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
+        const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
+        std.log.debug("ptr={d} len={d}", .{ ptr, len });
+        const buf = e.memory[ptr..][0..len];
+        const written = os.write(preopen.host_fd, buf) catch |err| switch (err) {
+            error.AccessDenied => return .ACCES,
+            error.DiskQuota => return .DQUOT,
+            error.InputOutput => return .IO,
+            error.FileTooBig => return .FBIG,
+            error.NoSpaceLeft => return .NOSPC,
+            error.BrokenPipe => return .PIPE,
+            error.NotOpenForWriting => return .BADF,
+            else => @panic("unexpected error"),
+        };
+        if (written == 0) break;
+        total_written += written;
+    }
+    mem.writeIntLittle(u32, e.memory[nwritten..][0..4], @intCast(u32, total_written));
     return .SUCCESS;
 }
