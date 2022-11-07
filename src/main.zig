@@ -211,6 +211,8 @@ const Label = struct {
     /// pc of the instruction after the loop.
     /// If it's zero then it's a block.
     loop_pc: u32,
+    block_type: i32,
+    stack_top: u32,
 };
 
 const Mutability = enum { @"const", @"var" };
@@ -228,6 +230,7 @@ const Import = struct {
 };
 
 const Exec = struct {
+    /// Points to one after the last stack item.
     stack_top: u32,
     frames_index: u32,
     module_bytes: []const u8,
@@ -242,12 +245,27 @@ const Exec = struct {
     fn br(e: *Exec, label_count: u32) void {
         const frame = &frames[e.frames_index];
         const pc = &frame.pc;
-        const loop_pc = labels[frame.labels_end - label_count].loop_pc;
-        if (loop_pc != 0) {
-            pc.* = loop_pc;
+        const label = labels[frame.labels_end - label_count];
+
+        // Taking a branch unwinds the operand stack up to the height where the
+        // targeted structured control instruction was entered
+        if (label.block_type >= 0) {
+            @panic("loop type gte zero");
+        } else if (label.block_type == -0x40) {
+            // void
+            e.stack_top = label.stack_top;
+        } else {
+            // one result value
+            stack[label.stack_top] = stack[e.stack_top - 1];
+            e.stack_top = label.stack_top + 1;
+        }
+
+        if (label.loop_pc != 0) {
+            pc.* = label.loop_pc;
             frame.labels_end -= label_count;
             return;
         }
+
         // Skip forward past N end instructions.
         const module_bytes = e.module_bytes;
         var end_count: u32 = label_count;
@@ -525,8 +543,8 @@ const Exec = struct {
             e.stack_top -= 2;
             e.push(.{ .u32 = @enumToInt(wasi_args_sizes_get(
                 e,
+                stack[e.stack_top + 0].u32,
                 stack[e.stack_top + 1].u32,
-                stack[e.stack_top + 2].u32,
             )) });
         } else if (mem.eql(u8, imp.sym_name, "args_get")) {
             @panic("TODO implement args_get");
@@ -582,7 +600,7 @@ const Exec = struct {
 
     fn pop(e: *Exec) Value {
         e.stack_top -= 1;
-        return stack[e.stack_top + 1];
+        return stack[e.stack_top];
     }
 
     fn run(e: *Exec) noreturn {
@@ -593,23 +611,27 @@ const Exec = struct {
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
             std.log.debug("stack[{d}]={d} pc={d}, op={s}", .{
-                e.stack_top, stack[e.stack_top].i32, pc.*, @tagName(op),
+                e.stack_top - 1, stack[e.stack_top - 1].i32, pc.*, @tagName(op),
             });
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
                 .nop => {},
                 .block => {
-                    // empirically there are no non-void blocks
-                    assert(module_bytes[pc.*] == 0x40);
-                    pc.* += 1;
-                    labels[frame.labels_end] = .{ .loop_pc = 0 };
+                    const block_type = readVarInt(module_bytes, pc, i32);
+                    labels[frame.labels_end] = .{
+                        .loop_pc = 0,
+                        .block_type = block_type,
+                        .stack_top = e.stack_top,
+                    };
                     frame.labels_end += 1;
                 },
                 .loop => {
-                    // empirically there are no non-void loops
-                    assert(module_bytes[pc.*] == 0x40);
-                    pc.* += 1;
-                    labels[frame.labels_end] = .{ .loop_pc = pc.* };
+                    const block_type = readVarInt(module_bytes, pc, i32);
+                    labels[frame.labels_end] = .{
+                        .loop_pc = pc.*,
+                        .block_type = block_type,
+                        .stack_top = e.stack_top,
+                    };
                     frame.labels_end += 1;
                 },
                 .@"if" => @panic("unhandled opcode: if"),
@@ -653,11 +675,11 @@ const Exec = struct {
                     e.stack_top -= 1;
                 },
                 .select => {
+                    const c = stack[e.stack_top - 1].u32;
+                    const b = stack[e.stack_top - 2];
+                    const a = stack[e.stack_top - 3];
+                    stack[e.stack_top - 3] = if (c != 0) a else b;
                     e.stack_top -= 2;
-                    const cond = stack[e.stack_top + 2].u32;
-                    const b = stack[e.stack_top + 1];
-                    const a = stack[e.stack_top];
-                    stack[e.stack_top] = if (cond != 0) a else b;
                 },
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
@@ -670,7 +692,7 @@ const Exec = struct {
                 },
                 .local_tee => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    stack[idx + frame.locals_begin] = stack[e.stack_top];
+                    stack[idx + frame.locals_begin] = stack[e.stack_top - 1];
                 },
                 .global_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
@@ -856,47 +878,47 @@ const Exec = struct {
                     e.push(.{ .f64 = x });
                 },
                 .i32_eqz => {
-                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 == 0);
+                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 == 0);
                 },
                 .i32_eq => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 == rhs.i32);
+                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 == rhs.i32);
                 },
                 .i32_ne => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 != rhs.i32);
+                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 != rhs.i32);
                 },
                 .i32_lt_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 < rhs.i32);
+                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 < rhs.i32);
                 },
                 .i32_lt_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 < rhs.u32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 < rhs.u32);
                 },
                 .i32_gt_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 > rhs.i32);
+                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 > rhs.i32);
                 },
                 .i32_gt_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 > rhs.u32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 > rhs.u32);
                 },
                 .i32_le_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 <= rhs.i32);
+                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 <= rhs.i32);
                 },
                 .i32_le_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 <= rhs.u32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 <= rhs.u32);
                 },
                 .i32_ge_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 = @boolToInt(stack[e.stack_top].i32 >= rhs.i32);
+                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 >= rhs.i32);
                 },
                 .i32_ge_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 = @boolToInt(stack[e.stack_top].u32 >= rhs.u32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 >= rhs.u32);
                 },
                 .i64_eqz => @panic("unhandled opcode: i64_eqz"),
                 .i64_eq => @panic("unhandled opcode: i64_eq"),
@@ -923,143 +945,143 @@ const Exec = struct {
                 .f64_ge => @panic("unhandled opcode: f64_ge"),
 
                 .i32_clz => {
-                    stack[e.stack_top].u32 = @clz(stack[e.stack_top].u32);
+                    stack[e.stack_top - 1].u32 = @clz(stack[e.stack_top - 1].u32);
                 },
                 .i32_ctz => {
-                    stack[e.stack_top].u32 = @ctz(stack[e.stack_top].u32);
+                    stack[e.stack_top - 1].u32 = @ctz(stack[e.stack_top - 1].u32);
                 },
                 .i32_popcnt => {
-                    stack[e.stack_top].u32 = @popCount(stack[e.stack_top].u32);
+                    stack[e.stack_top - 1].u32 = @popCount(stack[e.stack_top - 1].u32);
                 },
                 .i32_add => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 +%= rhs.i32;
+                    stack[e.stack_top - 1].i32 +%= rhs.i32;
                 },
                 .i32_sub => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 -%= rhs.i32;
+                    stack[e.stack_top - 1].i32 -%= rhs.i32;
                 },
                 .i32_mul => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 *%= rhs.i32;
+                    stack[e.stack_top - 1].i32 *%= rhs.i32;
                 },
                 .i32_div_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 *%= rhs.i32;
+                    stack[e.stack_top - 1].i32 *%= rhs.i32;
                 },
                 .i32_div_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 *%= rhs.u32;
+                    stack[e.stack_top - 1].u32 *%= rhs.u32;
                 },
                 .i32_rem_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 = @rem(stack[e.stack_top].i32, rhs.i32);
+                    stack[e.stack_top - 1].i32 = @rem(stack[e.stack_top - 1].i32, rhs.i32);
                 },
                 .i32_rem_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 = @rem(stack[e.stack_top].u32, rhs.u32);
+                    stack[e.stack_top - 1].u32 = @rem(stack[e.stack_top - 1].u32, rhs.u32);
                 },
                 .i32_and => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 &= rhs.u32;
+                    stack[e.stack_top - 1].u32 &= rhs.u32;
                 },
                 .i32_or => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 |= rhs.u32;
+                    stack[e.stack_top - 1].u32 |= rhs.u32;
                 },
                 .i32_xor => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 ^= rhs.u32;
+                    stack[e.stack_top - 1].u32 ^= rhs.u32;
                 },
                 .i32_shl => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 <<= @truncate(u5, rhs.u32);
+                    stack[e.stack_top - 1].u32 <<= @truncate(u5, rhs.u32);
                 },
                 .i32_shr_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i32 >>= @truncate(u5, rhs.u32);
+                    stack[e.stack_top - 1].i32 >>= @truncate(u5, rhs.u32);
                 },
                 .i32_shr_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 >>= @truncate(u5, rhs.u32);
+                    stack[e.stack_top - 1].u32 >>= @truncate(u5, rhs.u32);
                 },
                 .i32_rotl => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 = std.math.rotl(u32, stack[e.stack_top].u32, rhs.u32);
+                    stack[e.stack_top - 1].u32 = std.math.rotl(u32, stack[e.stack_top - 1].u32, rhs.u32);
                 },
                 .i32_rotr => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u32 = std.math.rotr(u32, stack[e.stack_top].u32, rhs.u32);
+                    stack[e.stack_top - 1].u32 = std.math.rotr(u32, stack[e.stack_top - 1].u32, rhs.u32);
                 },
 
                 .i64_clz => {
-                    stack[e.stack_top].u64 = @clz(stack[e.stack_top].u64);
+                    stack[e.stack_top - 1].u64 = @clz(stack[e.stack_top - 1].u64);
                 },
                 .i64_ctz => {
-                    stack[e.stack_top].u64 = @ctz(stack[e.stack_top].u64);
+                    stack[e.stack_top - 1].u64 = @ctz(stack[e.stack_top - 1].u64);
                 },
                 .i64_popcnt => {
-                    stack[e.stack_top].u64 = @popCount(stack[e.stack_top].u64);
+                    stack[e.stack_top - 1].u64 = @popCount(stack[e.stack_top - 1].u64);
                 },
                 .i64_add => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i64 +%= rhs.i64;
+                    stack[e.stack_top - 1].i64 +%= rhs.i64;
                 },
                 .i64_sub => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i64 -%= rhs.i64;
+                    stack[e.stack_top - 1].i64 -%= rhs.i64;
                 },
                 .i64_mul => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i64 *%= rhs.i64;
+                    stack[e.stack_top - 1].i64 *%= rhs.i64;
                 },
                 .i64_div_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i64 *%= rhs.i64;
+                    stack[e.stack_top - 1].i64 *%= rhs.i64;
                 },
                 .i64_div_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 *%= rhs.u64;
+                    stack[e.stack_top - 1].u64 *%= rhs.u64;
                 },
                 .i64_rem_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i64 = @rem(stack[e.stack_top].i64, rhs.i64);
+                    stack[e.stack_top - 1].i64 = @rem(stack[e.stack_top - 1].i64, rhs.i64);
                 },
                 .i64_rem_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 = @rem(stack[e.stack_top].u64, rhs.u64);
+                    stack[e.stack_top - 1].u64 = @rem(stack[e.stack_top - 1].u64, rhs.u64);
                 },
                 .i64_and => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 &= rhs.u64;
+                    stack[e.stack_top - 1].u64 &= rhs.u64;
                 },
                 .i64_or => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 |= rhs.u64;
+                    stack[e.stack_top - 1].u64 |= rhs.u64;
                 },
                 .i64_xor => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 ^= rhs.u64;
+                    stack[e.stack_top - 1].u64 ^= rhs.u64;
                 },
                 .i64_shl => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 <<= @truncate(u6, rhs.u64);
+                    stack[e.stack_top - 1].u64 <<= @truncate(u6, rhs.u64);
                 },
                 .i64_shr_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top].i64 >>= @truncate(u6, rhs.u64);
+                    stack[e.stack_top - 1].i64 >>= @truncate(u6, rhs.u64);
                 },
                 .i64_shr_u => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 >>= @truncate(u6, rhs.u64);
+                    stack[e.stack_top - 1].u64 >>= @truncate(u6, rhs.u64);
                 },
                 .i64_rotl => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 = std.math.rotl(u64, stack[e.stack_top].u64, rhs.u64);
+                    stack[e.stack_top - 1].u64 = std.math.rotl(u64, stack[e.stack_top - 1].u64, rhs.u64);
                 },
                 .i64_rotr => {
                     const rhs = e.pop();
-                    stack[e.stack_top].u64 = std.math.rotr(u64, stack[e.stack_top].u64, rhs.u64);
+                    stack[e.stack_top - 1].u64 = std.math.rotr(u64, stack[e.stack_top - 1].u64, rhs.u64);
                 },
 
                 .f32_abs => @panic("unhandled opcode: f32_abs"),
