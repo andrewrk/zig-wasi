@@ -144,7 +144,49 @@ pub fn main() !void {
         const flags = readVarInt(module_bytes, &i, u32);
         _ = flags;
         const initial = readVarInt(module_bytes, &i, u32);
-        const memory = try gpa.alloc(u8, initial);
+        var max_mem_size = initial;
+
+        {
+            i = section_starts[@enumToInt(wasm.Section.data)];
+            var datas_count = readVarInt(module_bytes, &i, u32);
+            while (datas_count > 0) : (datas_count -= 1) {
+                const mode = readVarInt(module_bytes, &i, u32);
+                assert(mode == 0);
+                const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
+                i += 1;
+                assert(opcode == .i32_const);
+                const offset = readVarInt(module_bytes, &i, u32);
+                const end = @intToEnum(wasm.Opcode, module_bytes[i]);
+                assert(end == .end);
+                i += 1;
+                const bytes_len = readVarInt(module_bytes, &i, u32);
+                i += bytes_len;
+                max_mem_size = @max(max_mem_size, offset + bytes_len);
+            }
+        }
+
+        const memory = try arena.alloc(u8, max_mem_size);
+        @memset(memory.ptr, 0, memory.len);
+
+        {
+            i = section_starts[@enumToInt(wasm.Section.data)];
+            var datas_count = readVarInt(module_bytes, &i, u32);
+            while (datas_count > 0) : (datas_count -= 1) {
+                const mode = readVarInt(module_bytes, &i, u32);
+                assert(mode == 0);
+                const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
+                i += 1;
+                assert(opcode == .i32_const);
+                const offset = readVarInt(module_bytes, &i, u32);
+                const end = @intToEnum(wasm.Opcode, module_bytes[i]);
+                assert(end == .end);
+                i += 1;
+                const bytes_len = readVarInt(module_bytes, &i, u32);
+                mem.copy(u8, memory[offset..], module_bytes[i..][0..bytes_len]);
+                i += bytes_len;
+            }
+        }
+
         break :m memory;
     };
 
@@ -153,13 +195,14 @@ pub fn main() !void {
         .pc = undefined,
         .stack_begin = undefined,
         .locals_begin = undefined,
+        .labels_end = 0,
+        .return_arity = 0,
     };
 
     var exec: Exec = .{
         .module_bytes = module_bytes,
         .stack_top = 0,
         .frames_index = 1,
-        .labels_index = 0,
         .functions = functions,
         .types = types,
         .globals = globals,
@@ -182,10 +225,15 @@ const Frame = struct {
     pc: u32,
     stack_begin: u32,
     locals_begin: u32,
+    labels_end: u32,
+    return_arity: u32,
 };
 
 const Label = struct {
-    br_pc: u32,
+    /// If it's non-zero then it's a loop and this is the
+    /// pc of the instruction after the loop.
+    /// If it's zero then it's a block.
+    loop_pc: u32,
 };
 
 const Mutability = enum { @"const", @"var" };
@@ -205,7 +253,6 @@ const Import = struct {
 const Exec = struct {
     stack_top: u32,
     frames_index: u32,
-    labels_index: u32,
     module_bytes: []const u8,
     functions: []const Function,
     /// Type index to start of type in module_bytes.
@@ -214,6 +261,233 @@ const Exec = struct {
     memory: []u8,
     imports: []const Import,
     args: []const []const u8,
+
+    fn br(e: *Exec, label_count: u32) void {
+        const frame = &frames[e.frames_index];
+        const pc = &frame.pc;
+        const loop_pc = labels[frame.labels_end - label_count].loop_pc;
+        if (loop_pc != 0) {
+            pc.* = loop_pc;
+            frame.labels_end -= label_count;
+            return;
+        }
+        // Skip forward past N end instructions.
+        const module_bytes = e.module_bytes;
+        var end_count: u32 = label_count;
+        while (end_count > 0) {
+            const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
+            //std.log.debug("skipping over pc={d} op={s}", .{ pc.*, @tagName(op) });
+            pc.* += 1;
+            switch (op) {
+                .block, .loop => {
+                    // empirically there are no non-void blocks/loops
+                    assert(module_bytes[pc.*] == 0x40);
+                    pc.* += 1;
+                    end_count += 1;
+                },
+                .@"if" => @panic("unhandled (parse) opcode: if"),
+                .@"else" => @panic("unhandled (parse) opcode: else"),
+                .end => {
+                    end_count -= 1;
+                },
+
+                .@"unreachable",
+                .nop,
+                .memory_size,
+                .memory_grow,
+                .i32_eqz,
+                .i32_eq,
+                .i32_ne,
+                .i32_lt_s,
+                .i32_lt_u,
+                .i32_gt_s,
+                .i32_gt_u,
+                .i32_le_s,
+                .i32_le_u,
+                .i32_ge_s,
+                .i32_ge_u,
+                .i64_eqz,
+                .i64_eq,
+                .i64_ne,
+                .i64_lt_s,
+                .i64_lt_u,
+                .i64_gt_s,
+                .i64_gt_u,
+                .i64_le_s,
+                .i64_le_u,
+                .i64_ge_s,
+                .i64_ge_u,
+                .f32_eq,
+                .f32_ne,
+                .f32_lt,
+                .f32_gt,
+                .f32_le,
+                .f32_ge,
+                .f64_eq,
+                .f64_ne,
+                .f64_lt,
+                .f64_gt,
+                .f64_le,
+                .f64_ge,
+                .i32_clz,
+                .i32_ctz,
+                .i32_popcnt,
+                .i32_add,
+                .i32_sub,
+                .i32_mul,
+                .i32_div_s,
+                .i32_div_u,
+                .i32_rem_s,
+                .i32_rem_u,
+                .i32_and,
+                .i32_or,
+                .i32_xor,
+                .i32_shl,
+                .i32_shr_s,
+                .i32_shr_u,
+                .i32_rotl,
+                .i32_rotr,
+                .i64_clz,
+                .i64_ctz,
+                .i64_popcnt,
+                .i64_add,
+                .i64_sub,
+                .i64_mul,
+                .i64_div_s,
+                .i64_div_u,
+                .i64_rem_s,
+                .i64_rem_u,
+                .i64_and,
+                .i64_or,
+                .i64_xor,
+                .i64_shl,
+                .i64_shr_s,
+                .i64_shr_u,
+                .i64_rotl,
+                .i64_rotr,
+                .f32_abs,
+                .f32_neg,
+                .f32_ceil,
+                .f32_floor,
+                .f32_trunc,
+                .f32_nearest,
+                .f32_sqrt,
+                .f32_add,
+                .f32_sub,
+                .f32_mul,
+                .f32_div,
+                .f32_min,
+                .f32_max,
+                .f32_copysign,
+                .f64_abs,
+                .f64_neg,
+                .f64_ceil,
+                .f64_floor,
+                .f64_trunc,
+                .f64_nearest,
+                .f64_sqrt,
+                .f64_add,
+                .f64_sub,
+                .f64_mul,
+                .f64_div,
+                .f64_min,
+                .f64_max,
+                .f64_copysign,
+                .i32_wrap_i64,
+                .i32_trunc_f32_s,
+                .i32_trunc_f32_u,
+                .i32_trunc_f64_s,
+                .i32_trunc_f64_u,
+                .i64_extend_i32_s,
+                .i64_extend_i32_u,
+                .i64_trunc_f32_s,
+                .i64_trunc_f32_u,
+                .i64_trunc_f64_s,
+                .i64_trunc_f64_u,
+                .f32_convert_i32_s,
+                .f32_convert_i32_u,
+                .f32_convert_i64_s,
+                .f32_convert_i64_u,
+                .f32_demote_f64,
+                .f64_convert_i32_s,
+                .f64_convert_i32_u,
+                .f64_convert_i64_s,
+                .f64_convert_i64_u,
+                .f64_promote_f32,
+                .i32_reinterpret_f32,
+                .i64_reinterpret_f64,
+                .f32_reinterpret_i32,
+                .f64_reinterpret_i64,
+                .i32_extend8_s,
+                .i32_extend16_s,
+                .i64_extend8_s,
+                .i64_extend16_s,
+                .i64_extend32_s,
+                .drop,
+                .select,
+                .@"return",
+                => {},
+
+                .br,
+                .br_if,
+                .call,
+                .local_get,
+                .local_set,
+                .local_tee,
+                .global_get,
+                .global_set,
+                => {
+                    _ = readVarInt(module_bytes, pc, u32);
+                },
+
+                .i32_load,
+                .i64_load,
+                .f32_load,
+                .f64_load,
+                .i32_load8_s,
+                .i32_load8_u,
+                .i32_load16_s,
+                .i32_load16_u,
+                .i64_load8_s,
+                .i64_load8_u,
+                .i64_load16_s,
+                .i64_load16_u,
+                .i64_load32_s,
+                .i64_load32_u,
+                .i32_store,
+                .i64_store,
+                .f32_store,
+                .f64_store,
+                .i32_store8,
+                .i32_store16,
+                .i64_store8,
+                .i64_store16,
+                .i64_store32,
+                .call_indirect,
+                => {
+                    _ = readVarInt(module_bytes, pc, u32);
+                    _ = readVarInt(module_bytes, pc, u32);
+                },
+
+                .br_table => @panic("unhandled (parse) opcode: br_table"),
+
+                .f32_const => {
+                    pc.* += 4;
+                },
+                .f64_const => {
+                    pc.* += 8;
+                },
+                .i32_const => {
+                    _ = readVarInt(module_bytes, pc, i32);
+                },
+                .i64_const => {
+                    _ = readVarInt(module_bytes, pc, i64);
+                },
+
+                _ => @panic("unhandled (parse) opcode"),
+            }
+        }
+    }
 
     fn initCall(e: *Exec, fn_id: u32) void {
         if (fn_id < e.imports.len) {
@@ -228,10 +502,10 @@ const Exec = struct {
         i += 1;
         const param_count = readVarInt(module_bytes, &i, u32);
         i += param_count;
-        const return_count = readVarInt(module_bytes, &i, u32);
-        i += return_count;
-        std.log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_count: {d}", .{
-            fn_idx, func.type_idx, param_count, return_count,
+        const return_arity = readVarInt(module_bytes, &i, u32);
+        i += return_arity;
+        std.log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_arity: {d}", .{
+            fn_idx, func.type_idx, param_count, return_arity,
         });
 
         const locals_begin = e.stack_top - param_count;
@@ -250,12 +524,16 @@ const Exec = struct {
         mem.set(Value, stack[e.stack_top..][0..locals_count], Value{ .u64 = 0 });
         e.stack_top += locals_count;
 
+        const prev_labels_end = frames[e.frames_index].labels_end;
+
         e.frames_index += 1;
         frames[e.frames_index] = .{
             .fn_idx = fn_idx,
+            .return_arity = return_arity,
             .pc = i,
             .stack_begin = e.stack_top,
             .locals_begin = locals_begin,
+            .labels_end = prev_labels_end,
         };
     }
 
@@ -337,28 +615,56 @@ const Exec = struct {
             const pc = &frame.pc;
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
-            std.log.debug("stack_top={d} pc={d}, op={s}", .{
-                stack[e.stack_top].i32, pc.*, @tagName(op),
+            std.log.debug("stack[{d}]={d} pc={d}, op={s}", .{
+                e.stack_top, stack[e.stack_top].i32, pc.*, @tagName(op),
             });
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
                 .nop => {},
                 .block => {
-                    if (module_bytes[pc.*] == 0x40) {
-                        pc.* += 1;
-                    } else {
-                        // empirically there are no non-void blocks
-                        @panic("non-void block");
-                        //const valtype = readVarInt(module_bytes, pc, u32);
-                        //_ = valtype;
-                    }
+                    // empirically there are no non-void blocks
+                    assert(module_bytes[pc.*] == 0x40);
+                    pc.* += 1;
+                    labels[frame.labels_end] = .{ .loop_pc = 0 };
+                    frame.labels_end += 1;
                 },
-                .loop => @panic("unhandled opcode: loop"),
+                .loop => {
+                    // empirically there are no non-void loops
+                    assert(module_bytes[pc.*] == 0x40);
+                    pc.* += 1;
+                    labels[frame.labels_end] = .{ .loop_pc = pc.* };
+                    frame.labels_end += 1;
+                },
                 .@"if" => @panic("unhandled opcode: if"),
                 .@"else" => @panic("unhandled opcode: else"),
-                .end => {},
-                .br => @panic("unhandled opcode: br"),
-                .br_if => @panic("unhandled opcode: br_if"),
+                .end => {
+                    frame.labels_end -= 1;
+                    const prev_frame = &frames[e.frames_index - 1];
+                    std.log.debug("labels_end {d}=>{d} (base: {d}) arity={d}", .{
+                        frame.labels_end + 1, frame.labels_end, prev_frame.labels_end, frame.return_arity,
+                    });
+                    if (frame.labels_end == prev_frame.labels_end) {
+                        const n = frame.return_arity;
+                        const dst = stack[frame.locals_begin..][0..n];
+                        const src = stack[e.stack_top - n ..][0..n];
+                        mem.copy(Value, dst, src);
+                        e.stack_top = frame.locals_begin + n;
+                        e.frames_index -= 1;
+                        std.log.debug("end ret, stack[{d}]={d}", .{
+                            e.stack_top, stack[e.stack_top].i32,
+                        });
+                    }
+                },
+                .br => {
+                    const label_idx = readVarInt(module_bytes, pc, u32);
+                    e.br(label_idx + 1);
+                },
+                .br_if => {
+                    const label_idx = readVarInt(module_bytes, pc, u32);
+                    if (e.pop().u32 != 0) {
+                        e.br(label_idx + 1);
+                    }
+                },
                 .br_table => @panic("unhandled opcode: br_table"),
                 .@"return" => @panic("unhandled opcode: return"),
                 .call => {
