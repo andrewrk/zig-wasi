@@ -143,48 +143,25 @@ pub fn main() !void {
         if (memories_len != 1) return error.UnexpectedMemoryCount;
         const flags = readVarInt(module_bytes, &i, u32);
         _ = flags;
-        const initial = readVarInt(module_bytes, &i, u32);
-        var max_mem_size = initial;
-
-        {
-            i = section_starts[@enumToInt(wasm.Section.data)];
-            var datas_count = readVarInt(module_bytes, &i, u32);
-            while (datas_count > 0) : (datas_count -= 1) {
-                const mode = readVarInt(module_bytes, &i, u32);
-                assert(mode == 0);
-                const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
-                i += 1;
-                assert(opcode == .i32_const);
-                const offset = readVarInt(module_bytes, &i, u32);
-                const end = @intToEnum(wasm.Opcode, module_bytes[i]);
-                assert(end == .end);
-                i += 1;
-                const bytes_len = readVarInt(module_bytes, &i, u32);
-                i += bytes_len;
-                max_mem_size = @max(max_mem_size, offset + bytes_len);
-            }
-        }
-
-        const memory = try arena.alloc(u8, max_mem_size);
+        const initial = readVarInt(module_bytes, &i, u32) * 64 * 1024;
+        const memory = try arena.alloc(u8, initial);
         @memset(memory.ptr, 0, memory.len);
 
-        {
-            i = section_starts[@enumToInt(wasm.Section.data)];
-            var datas_count = readVarInt(module_bytes, &i, u32);
-            while (datas_count > 0) : (datas_count -= 1) {
-                const mode = readVarInt(module_bytes, &i, u32);
-                assert(mode == 0);
-                const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
-                i += 1;
-                assert(opcode == .i32_const);
-                const offset = readVarInt(module_bytes, &i, u32);
-                const end = @intToEnum(wasm.Opcode, module_bytes[i]);
-                assert(end == .end);
-                i += 1;
-                const bytes_len = readVarInt(module_bytes, &i, u32);
-                mem.copy(u8, memory[offset..], module_bytes[i..][0..bytes_len]);
-                i += bytes_len;
-            }
+        i = section_starts[@enumToInt(wasm.Section.data)];
+        var datas_count = readVarInt(module_bytes, &i, u32);
+        while (datas_count > 0) : (datas_count -= 1) {
+            const mode = readVarInt(module_bytes, &i, u32);
+            assert(mode == 0);
+            const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
+            i += 1;
+            assert(opcode == .i32_const);
+            const offset = readVarInt(module_bytes, &i, u32);
+            const end = @intToEnum(wasm.Opcode, module_bytes[i]);
+            assert(end == .end);
+            i += 1;
+            const bytes_len = readVarInt(module_bytes, &i, u32);
+            mem.copy(u8, memory[offset..], module_bytes[i..][0..bytes_len]);
+            i += bytes_len;
         }
 
         break :m memory;
@@ -672,8 +649,16 @@ const Exec = struct {
                     e.initCall(fn_id);
                 },
                 .call_indirect => @panic("unhandled opcode: call_indirect"),
-                .drop => @panic("unhandled opcode: drop"),
-                .select => @panic("unhandled opcode: select"),
+                .drop => {
+                    e.stack_top -= 1;
+                },
+                .select => {
+                    e.stack_top -= 2;
+                    const cond = stack[e.stack_top + 2].u32;
+                    const b = stack[e.stack_top + 1];
+                    const a = stack[e.stack_top];
+                    stack[e.stack_top] = if (cond != 0) a else b;
+                },
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
                     const val = stack[idx + frame.locals_begin];
@@ -730,8 +715,10 @@ const Exec = struct {
                 .i32_load8_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop().u32;
-                    e.push(.{ .u32 = e.memory[offset] });
+                    const arg = e.pop().u32;
+                    const offset = readVarInt(module_bytes, pc, u32);
+                    std.log.debug("offset={d} arg={d}", .{ offset, arg });
+                    e.push(.{ .u32 = e.memory[offset + arg] });
                 },
                 .i32_load16_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
@@ -846,8 +833,12 @@ const Exec = struct {
                     const small = @truncate(u32, e.pop().u64);
                     mem.writeIntLittle(u32, e.memory[offset..][0..4], small);
                 },
-                .memory_size => {},
-                .memory_grow => {},
+                .memory_size => {
+                    @panic("memory_size");
+                },
+                .memory_grow => {
+                    @panic("memory_grow");
+                },
                 .i32_const => {
                     const x = readVarInt(module_bytes, pc, i32);
                     e.push(.{ .i32 = x });
