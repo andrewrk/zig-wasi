@@ -6,6 +6,7 @@ const mem = std.mem;
 const wasm = std.wasm;
 const wasi = std.os.wasi;
 const os = std.os;
+const log = std.log;
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -257,6 +258,7 @@ const Exec = struct {
 
     fn br(e: *Exec, label_count: u32) void {
         const frame = &frames[e.frames_index];
+        //log.debug("br frame.labels_end={d} label_count={d}", .{ frame.labels_end, label_count });
         const pc = &frame.pc;
         const label = labels[frame.labels_end - label_count];
 
@@ -275,16 +277,18 @@ const Exec = struct {
 
         if (label.loop_pc != 0) {
             pc.* = label.loop_pc;
-            frame.labels_end -= label_count;
+            frame.labels_end -= label_count - 1;
             return;
         }
+
+        frame.labels_end -= label_count;
 
         // Skip forward past N end instructions.
         const module_bytes = e.module_bytes;
         var end_count: u32 = label_count;
         while (end_count > 0) {
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
-            //std.log.debug("skipping over pc={d} op={s}", .{ pc.*, @tagName(op) });
+            //log.debug("skipping over pc={d} op={s}", .{ pc.*, @tagName(op) });
             pc.* += 1;
             switch (op) {
                 .block, .loop => {
@@ -525,7 +529,7 @@ const Exec = struct {
             locals_count += current_count;
         }
 
-        std.log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_arity: {d}, locals_begin: {d}, locals_count: {d}", .{
+        log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_arity: {d}, locals_begin: {d}, locals_count: {d}", .{
             fn_idx, func.type_idx, param_count, return_arity, locals_begin, locals_count,
         });
 
@@ -643,13 +647,13 @@ const Exec = struct {
             const pc = &frame.pc;
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
-            if (e.stack_top > 0) {
-                std.log.debug("stack[{d}]={d} pc={d}, op={s}", .{
-                    e.stack_top - 1, stack[e.stack_top - 1].i32, pc.*, @tagName(op),
-                });
-            } else {
-                std.log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
-            }
+            //if (e.stack_top > 0) {
+            //    log.debug("stack[{d}]={d} pc={d}, op={s}", .{
+            //        e.stack_top - 1, stack[e.stack_top - 1].i32, pc.*, @tagName(op),
+            //    });
+            //} else {
+            //    log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
+            //}
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
                 .nop => {},
@@ -661,6 +665,7 @@ const Exec = struct {
                         .stack_top = e.stack_top,
                     };
                     frame.labels_end += 1;
+                    //log.debug("set labels_end={d}", .{frame.labels_end});
                 },
                 .loop => {
                     const block_type = readVarInt(module_bytes, pc, i32);
@@ -670,14 +675,15 @@ const Exec = struct {
                         .stack_top = e.stack_top,
                     };
                     frame.labels_end += 1;
+                    //log.debug("set labels_end={d}", .{frame.labels_end});
                 },
                 .@"if" => @panic("unhandled opcode: if"),
                 .@"else" => @panic("unhandled opcode: else"),
                 .end => {
                     const prev_frame = &frames[e.frames_index - 1];
-                    std.log.debug("labels_end {d}-- (base: {d}) arity={d}", .{
-                        frame.labels_end, prev_frame.labels_end, frame.return_arity,
-                    });
+                    //log.debug("labels_end {d}-- (base: {d}) arity={d}", .{
+                    //    frame.labels_end, prev_frame.labels_end, frame.return_arity,
+                    //});
                     if (frame.labels_end == prev_frame.labels_end) {
                         const n = frame.return_arity;
                         const dst = stack[frame.locals_begin..][0..n];
@@ -715,7 +721,7 @@ const Exec = struct {
                 .call_indirect => {
                     const table_idx = readVarInt(module_bytes, pc, u32);
                     const type_idx = readVarInt(module_bytes, pc, u32);
-                    std.log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
+                    log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
                     const fn_id = e.pop().u32;
                     e.call(fn_id);
                 },
@@ -731,18 +737,18 @@ const Exec = struct {
                 },
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    //std.log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
+                    //log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
                     const val = stack[idx + frame.locals_begin];
                     e.push(val);
                 },
                 .local_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    //std.log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
+                    //log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     stack[idx + frame.locals_begin] = e.pop();
                 },
                 .local_tee => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    //std.log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
+                    //log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     stack[idx + frame.locals_begin] = stack[e.stack_top - 1];
                 },
                 .global_get => {
@@ -1256,7 +1262,7 @@ fn readFloat64(bytes: []const u8, i: *u32) f64 {
 
 /// fn args_sizes_get(argc: *usize, argv_buf_size: *usize) errno_t;
 fn wasi_args_sizes_get(e: *Exec, argc: u32, argv_buf_size: u32) wasi.errno_t {
-    std.log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
+    log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
     mem.writeIntLittle(u32, e.memory[argc..][0..4], @intCast(u32, e.args.len));
     var buf_size: usize = 0;
     for (e.args) |arg| {
@@ -1299,7 +1305,7 @@ fn findPreopen(wasi_fd: i32) ?Preopen {
 ///     u: usize,
 /// };
 fn wasi_fd_prestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
-    std.log.debug("wasi_fd_prestat_get fd={d} buf={d}", .{ fd, buf });
+    log.debug("wasi_fd_prestat_get fd={d} buf={d}", .{ fd, buf });
     const preopen = findPreopen(fd) orelse return .BADF;
     mem.writeIntLittle(u32, e.memory[buf + 0 ..][0..4], 0);
     mem.writeIntLittle(u32, e.memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
@@ -1308,7 +1314,7 @@ fn wasi_fd_prestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
 
 /// fn fd_prestat_dir_name(fd: fd_t, path: [*]u8, path_len: usize) errno_t;
 fn wasi_fd_prestat_dir_name(e: *Exec, fd: i32, path: u32, path_len: u32) wasi.errno_t {
-    std.log.debug("wasi_fd_prestat_dir_name fd={d} path={d} path_len={d}", .{ fd, path, path_len });
+    log.debug("wasi_fd_prestat_dir_name fd={d} path={d} path_len={d}", .{ fd, path, path_len });
     const preopen = findPreopen(fd) orelse return .BADF;
     assert(path_len == preopen.name.len);
     mem.copy(u8, e.memory[path..], preopen.name);
@@ -1321,7 +1327,7 @@ fn wasi_fd_prestat_dir_name(e: *Exec, fd: i32, path: u32, path_len: u32) wasi.er
 ///     len: usize,
 /// };
 fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) wasi.errno_t {
-    std.log.debug("wasi_fd_write fd={d} iovs={d} iovs_len={d} nwritten={d}", .{
+    log.debug("wasi_fd_write fd={d} iovs={d} iovs_len={d} nwritten={d}", .{
         fd, iovs, iovs_len, nwritten,
     });
     const preopen = findPreopen(fd) orelse return .BADF;
@@ -1330,7 +1336,6 @@ fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) was
     while (i < iovs_len) : (i += 1) {
         const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
         const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
-        std.log.debug("ptr={d} len={d}", .{ ptr, len });
         const buf = e.memory[ptr..][0..len];
         const written = os.write(preopen.host_fd, buf) catch |err| switch (err) {
             error.AccessDenied => return .ACCES,
