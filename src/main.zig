@@ -10,6 +10,8 @@ const log = std.log;
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
+pub const log_level = .err;
+
 pub fn main() !void {
     const gpa = general_purpose_allocator.allocator();
 
@@ -481,7 +483,12 @@ const Exec = struct {
                     _ = readVarInt(module_bytes, pc, u32);
                 },
 
-                .br_table => @panic("unhandled (parse) opcode: br_table"),
+                .br_table => {
+                    var count = readVarInt(module_bytes, pc, u32) + 1;
+                    while (count > 0) : (count -= 1) {
+                        _ = readVarInt(module_bytes, pc, u32);
+                    }
+                },
 
                 .f32_const => {
                     pc.* += 4;
@@ -715,7 +722,19 @@ const Exec = struct {
                         e.br(label_idx + 1);
                     }
                 },
-                .br_table => @panic("unhandled opcode: br_table"),
+                .br_table => {
+                    const labels_len = readVarInt(module_bytes, pc, u32) + 1;
+                    const chosen_i = @min(e.pop().u32, labels_len - 1);
+                    var i: u32 = 0;
+                    var chosen_label_idx: u32 = undefined;
+                    while (i < labels_len) : (i += 1) {
+                        const label_idx = readVarInt(module_bytes, pc, u32);
+                        if (i == chosen_i) {
+                            chosen_label_idx = label_idx;
+                        }
+                    }
+                    e.br(chosen_label_idx + 1);
+                },
                 .@"return" => {
                     const n = frame.return_arity;
                     const dst = stack[frame.locals_begin..][0..n];
