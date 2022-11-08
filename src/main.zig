@@ -664,13 +664,13 @@ const Exec = struct {
             const pc = &frame.pc;
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
-            //if (e.stack_top > 0) {
-            //    log.debug("stack[{d}]={d} pc={d}, op={s}", .{
-            //        e.stack_top - 1, stack[e.stack_top - 1].i32, pc.*, @tagName(op),
-            //    });
-            //} else {
-            //    log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
-            //}
+            if (e.stack_top > 0) {
+                log.debug("stack[{d}]={d} pc={d}, op={s}", .{
+                    e.stack_top - 1, stack[e.stack_top - 1].i32, pc.*, @tagName(op),
+                });
+            } else {
+                log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
+            }
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
                 .nop => {},
@@ -967,19 +967,19 @@ const Exec = struct {
                     e.push(.{ .f64 = x });
                 },
                 .i32_eqz => {
-                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 == 0);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 == 0);
                 },
                 .i32_eq => {
                     const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 == rhs.i32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 == rhs.u32);
                 },
                 .i32_ne => {
                     const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 != rhs.i32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 != rhs.u32);
                 },
                 .i32_lt_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 < rhs.i32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].i32 < rhs.i32);
                 },
                 .i32_lt_u => {
                     const rhs = e.pop();
@@ -987,7 +987,7 @@ const Exec = struct {
                 },
                 .i32_gt_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 > rhs.i32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].i32 > rhs.i32);
                 },
                 .i32_gt_u => {
                     const rhs = e.pop();
@@ -995,7 +995,7 @@ const Exec = struct {
                 },
                 .i32_le_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 <= rhs.i32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].i32 <= rhs.i32);
                 },
                 .i32_le_u => {
                     const rhs = e.pop();
@@ -1003,35 +1003,103 @@ const Exec = struct {
                 },
                 .i32_ge_s => {
                     const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 = @boolToInt(stack[e.stack_top - 1].i32 >= rhs.i32);
+                    stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].i32 >= rhs.i32);
                 },
                 .i32_ge_u => {
                     const rhs = e.pop();
                     stack[e.stack_top - 1].u32 = @boolToInt(stack[e.stack_top - 1].u32 >= rhs.u32);
                 },
-                .i64_eqz => @panic("unhandled opcode: i64_eqz"),
-                .i64_eq => @panic("unhandled opcode: i64_eq"),
-                .i64_ne => @panic("unhandled opcode: i64_ne"),
-                .i64_lt_s => @panic("unhandled opcode: i64_lt_s"),
-                .i64_lt_u => @panic("unhandled opcode: i64_lt_u"),
-                .i64_gt_s => @panic("unhandled opcode: i64_gt_s"),
-                .i64_gt_u => @panic("unhandled opcode: i64_gt_u"),
-                .i64_le_s => @panic("unhandled opcode: i64_le_s"),
-                .i64_le_u => @panic("unhandled opcode: i64_le_u"),
-                .i64_ge_s => @panic("unhandled opcode: i64_ge_s"),
-                .i64_ge_u => @panic("unhandled opcode: i64_ge_u"),
-                .f32_eq => @panic("unhandled opcode: f32_eq"),
-                .f32_ne => @panic("unhandled opcode: f32_ne"),
-                .f32_lt => @panic("unhandled opcode: f32_lt"),
-                .f32_gt => @panic("unhandled opcode: f32_gt"),
-                .f32_le => @panic("unhandled opcode: f32_le"),
-                .f32_ge => @panic("unhandled opcode: f32_ge"),
-                .f64_eq => @panic("unhandled opcode: f64_eq"),
-                .f64_ne => @panic("unhandled opcode: f64_ne"),
-                .f64_lt => @panic("unhandled opcode: f64_lt"),
-                .f64_gt => @panic("unhandled opcode: f64_gt"),
-                .f64_le => @panic("unhandled opcode: f64_le"),
-                .f64_ge => @panic("unhandled opcode: f64_ge"),
+                .i64_eqz => {
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].i64 == 0);
+                },
+                .i64_eq => {
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].u64 == rhs);
+                },
+                .i64_ne => {
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].u64 != rhs);
+                },
+                .i64_lt_s => {
+                    const rhs = e.pop().i64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].i64 < rhs);
+                },
+                .i64_lt_u => {
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].u64 < rhs);
+                },
+                .i64_gt_s => {
+                    const rhs = e.pop().i64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].i64 > rhs);
+                },
+                .i64_gt_u => {
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].u64 > rhs);
+                },
+                .i64_le_s => {
+                    const rhs = e.pop().i64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].i64 <= rhs);
+                },
+                .i64_le_u => {
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].u64 <= rhs);
+                },
+                .i64_ge_s => {
+                    const rhs = e.pop().i64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].i64 >= rhs);
+                },
+                .i64_ge_u => {
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].u64 >= rhs);
+                },
+                .f32_eq => {
+                    const rhs = e.pop().f32;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f32 == rhs);
+                },
+                .f32_ne => {
+                    const rhs = e.pop().f32;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f32 != rhs);
+                },
+                .f32_lt => {
+                    const rhs = e.pop().f32;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f32 < rhs);
+                },
+                .f32_gt => {
+                    const rhs = e.pop().f32;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f32 > rhs);
+                },
+                .f32_le => {
+                    const rhs = e.pop().f32;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f32 <= rhs);
+                },
+                .f32_ge => {
+                    const rhs = e.pop().f32;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f32 >= rhs);
+                },
+                .f64_eq => {
+                    const rhs = e.pop().f64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f64 == rhs);
+                },
+                .f64_ne => {
+                    const rhs = e.pop().f64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f64 != rhs);
+                },
+                .f64_lt => {
+                    const rhs = e.pop().f64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f64 < rhs);
+                },
+                .f64_gt => {
+                    const rhs = e.pop().f64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f64 > rhs);
+                },
+                .f64_le => {
+                    const rhs = e.pop().f64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f64 <= rhs);
+                },
+                .f64_ge => {
+                    const rhs = e.pop().f64;
+                    stack[e.stack_top - 1].u64 = @boolToInt(stack[e.stack_top - 1].f64 >= rhs);
+                },
 
                 .i32_clz => {
                     stack[e.stack_top - 1].u32 = @clz(stack[e.stack_top - 1].u32);
@@ -1055,20 +1123,20 @@ const Exec = struct {
                     stack[e.stack_top - 1].i32 *%= rhs.i32;
                 },
                 .i32_div_s => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 *%= rhs.i32;
+                    const rhs = e.pop().i32;
+                    stack[e.stack_top - 1].i32 = @divTrunc(stack[e.stack_top - 1].i32, rhs);
                 },
                 .i32_div_u => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].u32 *%= rhs.u32;
+                    const rhs = e.pop().u32;
+                    stack[e.stack_top - 1].u32 /= rhs;
                 },
                 .i32_rem_s => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].i32 = @rem(stack[e.stack_top - 1].i32, rhs.i32);
+                    const rhs = e.pop().i32;
+                    stack[e.stack_top - 1].i32 = @rem(stack[e.stack_top - 1].i32, rhs);
                 },
                 .i32_rem_u => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].u32 = @rem(stack[e.stack_top - 1].u32, rhs.u32);
+                    const rhs = e.pop().u32;
+                    stack[e.stack_top - 1].u32 = @rem(stack[e.stack_top - 1].u32, rhs);
                 },
                 .i32_and => {
                     const rhs = e.pop();
@@ -1125,20 +1193,20 @@ const Exec = struct {
                     stack[e.stack_top - 1].i64 *%= rhs.i64;
                 },
                 .i64_div_s => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].i64 *%= rhs.i64;
+                    const rhs = e.pop().i64;
+                    stack[e.stack_top - 1].i64 = @divTrunc(stack[e.stack_top - 1].i64, rhs);
                 },
                 .i64_div_u => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].u64 *%= rhs.u64;
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 /= rhs;
                 },
                 .i64_rem_s => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].i64 = @rem(stack[e.stack_top - 1].i64, rhs.i64);
+                    const rhs = e.pop().i64;
+                    stack[e.stack_top - 1].i64 = @rem(stack[e.stack_top - 1].i64, rhs);
                 },
                 .i64_rem_u => {
-                    const rhs = e.pop();
-                    stack[e.stack_top - 1].u64 = @rem(stack[e.stack_top - 1].u64, rhs.u64);
+                    const rhs = e.pop().u64;
+                    stack[e.stack_top - 1].u64 = @rem(stack[e.stack_top - 1].u64, rhs);
                 },
                 .i64_and => {
                     const rhs = e.pop();
@@ -1201,36 +1269,98 @@ const Exec = struct {
                 .f64_min => @panic("unhandled opcode: f64_min"),
                 .f64_max => @panic("unhandled opcode: f64_max"),
                 .f64_copysign => @panic("unhandled opcode: f64_copysign"),
-                .i32_wrap_i64 => @panic("unhandled opcode: i32_wrap_i64"),
-                .i32_trunc_f32_s => @panic("unhandled opcode: i32_trunc_f32_s"),
-                .i32_trunc_f32_u => @panic("unhandled opcode: i32_trunc_f32_u"),
-                .i32_trunc_f64_s => @panic("unhandled opcode: i32_trunc_f64_s"),
-                .i32_trunc_f64_u => @panic("unhandled opcode: i32_trunc_f64_u"),
-                .i64_extend_i32_s => @panic("unhandled opcode: i64_extend_i32_s"),
-                .i64_extend_i32_u => @panic("unhandled opcode: i64_extend_i32_u"),
-                .i64_trunc_f32_s => @panic("unhandled opcode: i64_trunc_f32_s"),
-                .i64_trunc_f32_u => @panic("unhandled opcode: i64_trunc_f32_u"),
-                .i64_trunc_f64_s => @panic("unhandled opcode: i64_trunc_f64_s"),
-                .i64_trunc_f64_u => @panic("unhandled opcode: i64_trunc_f64_u"),
-                .f32_convert_i32_s => @panic("unhandled opcode: f32_convert_i32_s"),
-                .f32_convert_i32_u => @panic("unhandled opcode: f32_convert_i32_u"),
-                .f32_convert_i64_s => @panic("unhandled opcode: f32_convert_i64_s"),
-                .f32_convert_i64_u => @panic("unhandled opcode: f32_convert_i64_u"),
-                .f32_demote_f64 => @panic("unhandled opcode: f32_demote_f64"),
-                .f64_convert_i32_s => @panic("unhandled opcode: f64_convert_i32_s"),
-                .f64_convert_i32_u => @panic("unhandled opcode: f64_convert_i32_u"),
-                .f64_convert_i64_s => @panic("unhandled opcode: f64_convert_i64_s"),
-                .f64_convert_i64_u => @panic("unhandled opcode: f64_convert_i64_u"),
-                .f64_promote_f32 => @panic("unhandled opcode: f64_promote_f32"),
-                .i32_reinterpret_f32 => @panic("unhandled opcode: i32_reinterpret_f32"),
-                .i64_reinterpret_f64 => @panic("unhandled opcode: i64_reinterpret_f64"),
-                .f32_reinterpret_i32 => @panic("unhandled opcode: f32_reinterpret_i32"),
-                .f64_reinterpret_i64 => @panic("unhandled opcode: f64_reinterpret_i64"),
-                .i32_extend8_s => @panic("unhandled opcode: i32_extend8_s"),
-                .i32_extend16_s => @panic("unhandled opcode: i32_extend16_s"),
-                .i64_extend8_s => @panic("unhandled opcode: i64_extend8_s"),
-                .i64_extend16_s => @panic("unhandled opcode: i64_extend16_s"),
-                .i64_extend32_s => @panic("unhandled opcode: i64_extend32_s"),
+
+                .i32_wrap_i64 => {
+                    stack[e.stack_top - 1].i64 = @truncate(i32, stack[e.stack_top - 1].i64);
+                },
+                .i32_trunc_f32_s => {
+                    stack[e.stack_top - 1].i64 = @floatToInt(i32, stack[e.stack_top - 1].f32);
+                },
+                .i32_trunc_f32_u => {
+                    stack[e.stack_top - 1].u64 = @floatToInt(u32, stack[e.stack_top - 1].f32);
+                },
+                .i32_trunc_f64_s => {
+                    stack[e.stack_top - 1].i64 = @floatToInt(i32, stack[e.stack_top - 1].f64);
+                },
+                .i32_trunc_f64_u => {
+                    stack[e.stack_top - 1].u64 = @floatToInt(u32, stack[e.stack_top - 1].f64);
+                },
+                .i64_extend_i32_s => {
+                    stack[e.stack_top - 1].i64 = stack[e.stack_top - 1].i32;
+                },
+                .i64_extend_i32_u => {
+                    stack[e.stack_top - 1].u64 = stack[e.stack_top - 1].u32;
+                },
+                .i64_trunc_f32_s => {
+                    stack[e.stack_top - 1].i64 = @floatToInt(i64, stack[e.stack_top - 1].f32);
+                },
+                .i64_trunc_f32_u => {
+                    stack[e.stack_top - 1].u64 = @floatToInt(u32, stack[e.stack_top - 1].f32);
+                },
+                .i64_trunc_f64_s => {
+                    stack[e.stack_top - 1].i64 = @floatToInt(i64, stack[e.stack_top - 1].f64);
+                },
+                .i64_trunc_f64_u => {
+                    stack[e.stack_top - 1].u64 = @floatToInt(u64, stack[e.stack_top - 1].f64);
+                },
+                .f32_convert_i32_s => {
+                    stack[e.stack_top - 1].f32 = @intToFloat(f32, stack[e.stack_top - 1].i32);
+                },
+                .f32_convert_i32_u => {
+                    stack[e.stack_top - 1].f32 = @intToFloat(f32, stack[e.stack_top - 1].u32);
+                },
+                .f32_convert_i64_s => {
+                    stack[e.stack_top - 1].f32 = @intToFloat(f32, stack[e.stack_top - 1].i64);
+                },
+                .f32_convert_i64_u => {
+                    stack[e.stack_top - 1].f32 = @intToFloat(f32, stack[e.stack_top - 1].u64);
+                },
+                .f32_demote_f64 => {
+                    stack[e.stack_top - 1].f32 = @floatCast(f32, stack[e.stack_top - 1].f64);
+                },
+                .f64_convert_i32_s => {
+                    stack[e.stack_top - 1].f64 = @intToFloat(f64, stack[e.stack_top - 1].i32);
+                },
+                .f64_convert_i32_u => {
+                    stack[e.stack_top - 1].f64 = @intToFloat(f64, stack[e.stack_top - 1].u32);
+                },
+                .f64_convert_i64_s => {
+                    stack[e.stack_top - 1].f64 = @intToFloat(f64, stack[e.stack_top - 1].i64);
+                },
+                .f64_convert_i64_u => {
+                    stack[e.stack_top - 1].f64 = @intToFloat(f64, stack[e.stack_top - 1].u64);
+                },
+                .f64_promote_f32 => {
+                    stack[e.stack_top - 1].f64 = stack[e.stack_top - 1].f32;
+                },
+                .i32_reinterpret_f32 => {
+                    stack[e.stack_top - 1].u32 = @bitCast(u32, stack[e.stack_top - 1].f32);
+                },
+                .i64_reinterpret_f64 => {
+                    stack[e.stack_top - 1].u64 = @bitCast(u64, stack[e.stack_top - 1].f64);
+                },
+                .f32_reinterpret_i32 => {
+                    stack[e.stack_top - 1].f32 = @bitCast(f32, stack[e.stack_top - 1].u32);
+                },
+                .f64_reinterpret_i64 => {
+                    stack[e.stack_top - 1].f64 = @bitCast(f64, stack[e.stack_top - 1].u64);
+                },
+
+                .i32_extend8_s => {
+                    stack[e.stack_top - 1].i32 = @truncate(i8, stack[e.stack_top - 1].i32);
+                },
+                .i32_extend16_s => {
+                    stack[e.stack_top - 1].i32 = @truncate(i16, stack[e.stack_top - 1].i32);
+                },
+                .i64_extend8_s => {
+                    stack[e.stack_top - 1].i64 = @truncate(i8, stack[e.stack_top - 1].i64);
+                },
+                .i64_extend16_s => {
+                    stack[e.stack_top - 1].i64 = @truncate(i16, stack[e.stack_top - 1].i64);
+                },
+                .i64_extend32_s => {
+                    stack[e.stack_top - 1].i64 = @truncate(i32, stack[e.stack_top - 1].i64);
+                },
                 _ => @panic("unhandled opcode"),
             }
         }
@@ -1365,6 +1495,7 @@ fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) was
     while (i < iovs_len) : (i += 1) {
         const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
         const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
+        log.debug("ptr={d} len={d}", .{ ptr, len });
         const buf = e.memory[ptr..][0..len];
         const written = os.write(preopen.host_fd, buf) catch |err| return toWasiError(err);
         if (written == 0) break;
