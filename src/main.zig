@@ -160,8 +160,8 @@ pub fn main() !void {
         if (memories_len != 1) return error.UnexpectedMemoryCount;
         const flags = readVarInt(module_bytes, &i, u32);
         _ = flags;
-        const initial = readVarInt(module_bytes, &i, u32) * 64 * 1024;
-        const memory = try arena.alloc(u8, initial);
+        const initial = readVarInt(module_bytes, &i, u32) * wasm.page_size;
+        const memory = try gpa.alloc(u8, initial);
         @memset(memory.ptr, 0, memory.len);
 
         i = section_starts[@enumToInt(wasm.Section.data)];
@@ -992,10 +992,18 @@ const Exec = struct {
                     mem.writeIntLittle(u32, e.memory[offset..][0..4], small);
                 },
                 .memory_size => {
-                    @panic("memory_size");
+                    pc.* += 1; // skip 0x00 byte
+                    const page_count = @intCast(u32, e.memory.len / wasm.page_size);
+                    e.push(u32, page_count);
                 },
                 .memory_grow => {
-                    @panic("memory_grow");
+                    pc.* += 1; // skip 0x00 byte
+                    const gpa = general_purpose_allocator.allocator();
+                    const page_count = e.pop(u32);
+                    const old_page_count = @intCast(u32, e.memory.len / wasm.page_size);
+                    const new_len = e.memory.len + page_count * wasm.page_size;
+                    e.memory = gpa.realloc(e.memory, new_len) catch @panic("out of memory");
+                    e.push(u32, old_page_count);
                 },
                 .i32_const => {
                     const x = readVarInt(module_bytes, pc, i32);
