@@ -1358,34 +1358,118 @@ const Exec = struct {
                     e.push(u64, math.rotr(u64, lhs, rhs % 64));
                 },
 
-                .f32_abs => @panic("unhandled opcode: f32_abs"),
-                .f32_neg => @panic("unhandled opcode: f32_neg"),
-                .f32_ceil => @panic("unhandled opcode: f32_ceil"),
-                .f32_floor => @panic("unhandled opcode: f32_floor"),
-                .f32_trunc => @panic("unhandled opcode: f32_trunc"),
-                .f32_nearest => @panic("unhandled opcode: f32_nearest"),
-                .f32_sqrt => @panic("unhandled opcode: f32_sqrt"),
-                .f32_add => @panic("unhandled opcode: f32_add"),
-                .f32_sub => @panic("unhandled opcode: f32_sub"),
-                .f32_mul => @panic("unhandled opcode: f32_mul"),
-                .f32_div => @panic("unhandled opcode: f32_div"),
-                .f32_min => @panic("unhandled opcode: f32_min"),
-                .f32_max => @panic("unhandled opcode: f32_max"),
-                .f32_copysign => @panic("unhandled opcode: f32_copysign"),
-                .f64_abs => @panic("unhandled opcode: f64_abs"),
-                .f64_neg => @panic("unhandled opcode: f64_neg"),
-                .f64_ceil => @panic("unhandled opcode: f64_ceil"),
-                .f64_floor => @panic("unhandled opcode: f64_floor"),
-                .f64_trunc => @panic("unhandled opcode: f64_trunc"),
-                .f64_nearest => @panic("unhandled opcode: f64_nearest"),
-                .f64_sqrt => @panic("unhandled opcode: f64_sqrt"),
-                .f64_add => @panic("unhandled opcode: f64_add"),
-                .f64_sub => @panic("unhandled opcode: f64_sub"),
-                .f64_mul => @panic("unhandled opcode: f64_mul"),
-                .f64_div => @panic("unhandled opcode: f64_div"),
-                .f64_min => @panic("unhandled opcode: f64_min"),
-                .f64_max => @panic("unhandled opcode: f64_max"),
-                .f64_copysign => @panic("unhandled opcode: f64_copysign"),
+                .f32_abs => {
+                    e.push(f32, @fabs(e.pop(f32)));
+                },
+                .f32_neg => {
+                    e.push(f32, -e.pop(f32));
+                },
+                .f32_ceil => {
+                    e.push(f32, @ceil(e.pop(f32)));
+                },
+                .f32_floor => {
+                    e.push(f32, @floor(e.pop(f32)));
+                },
+                .f32_trunc => {
+                    e.push(f32, @trunc(e.pop(f32)));
+                },
+                .f32_nearest => {
+                    e.push(f32, @round(e.pop(f32)));
+                },
+                .f32_sqrt => {
+                    e.push(f32, @sqrt(e.pop(f32)));
+                },
+                .f32_add => {
+                    const rhs = e.pop(f32);
+                    const lhs = e.pop(f32);
+                    e.push(f32, lhs + rhs);
+                },
+                .f32_sub => {
+                    const rhs = e.pop(f32);
+                    const lhs = e.pop(f32);
+                    e.push(f32, lhs - rhs);
+                },
+                .f32_mul => {
+                    const rhs = e.pop(f32);
+                    const lhs = e.pop(f32);
+                    e.push(f32, lhs * rhs);
+                },
+                .f32_div => {
+                    const rhs = e.pop(f32);
+                    const lhs = e.pop(f32);
+                    e.push(f32, lhs / rhs);
+                },
+                .f32_min => {
+                    const rhs = e.pop(f32);
+                    const lhs = e.pop(f32);
+                    e.push(f32, @min(lhs, rhs));
+                },
+                .f32_max => {
+                    const rhs = e.pop(f32);
+                    const lhs = e.pop(f32);
+                    e.push(f32, @max(lhs, rhs));
+                },
+                .f32_copysign => {
+                    const rhs = e.pop(f32);
+                    const lhs = e.pop(f32);
+                    e.push(f32, math.copysign(lhs, rhs));
+                },
+                .f64_abs => {
+                    e.push(f64, @fabs(e.pop(f64)));
+                },
+                .f64_neg => {
+                    e.push(f64, -e.pop(f64));
+                },
+                .f64_ceil => {
+                    e.push(f64, @ceil(e.pop(f64)));
+                },
+                .f64_floor => {
+                    e.push(f64, @floor(e.pop(f64)));
+                },
+                .f64_trunc => {
+                    e.push(f64, @trunc(e.pop(f64)));
+                },
+                .f64_nearest => {
+                    e.push(f64, @round(e.pop(f64)));
+                },
+                .f64_sqrt => {
+                    e.push(f64, @sqrt(e.pop(f64)));
+                },
+                .f64_add => {
+                    const rhs = e.pop(f64);
+                    const lhs = e.pop(f64);
+                    e.push(f64, lhs + rhs);
+                },
+                .f64_sub => {
+                    const rhs = e.pop(f64);
+                    const lhs = e.pop(f64);
+                    e.push(f64, lhs - rhs);
+                },
+                .f64_mul => {
+                    const rhs = e.pop(f64);
+                    const lhs = e.pop(f64);
+                    e.push(f64, lhs * rhs);
+                },
+                .f64_div => {
+                    const rhs = e.pop(f64);
+                    const lhs = e.pop(f64);
+                    e.push(f64, lhs / rhs);
+                },
+                .f64_min => {
+                    const rhs = e.pop(f64);
+                    const lhs = e.pop(f64);
+                    e.push(f64, @min(lhs, rhs));
+                },
+                .f64_max => {
+                    const rhs = e.pop(f64);
+                    const lhs = e.pop(f64);
+                    e.push(f64, @max(lhs, rhs));
+                },
+                .f64_copysign => {
+                    const rhs = e.pop(f64);
+                    const lhs = e.pop(f64);
+                    e.push(f64, math.copysign(lhs, rhs));
+                },
 
                 .i32_wrap_i64 => {
                     const operand = e.pop(i64);
