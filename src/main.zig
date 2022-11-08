@@ -793,12 +793,12 @@ const Exec = struct {
                     e.call(fn_id);
                 },
                 .call_indirect => {
-                    const table_idx = readVarInt(module_bytes, pc, u32);
-                    assert(table_idx == 0);
                     const type_idx = readVarInt(module_bytes, pc, u32);
+                    const table_idx = readVarInt(module_bytes, pc, u32);
+                    log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
+                    assert(table_idx == 0);
                     const operand = e.pop(u32);
                     const fn_id = e.table[operand];
-                    log.debug("type_idx={d} operand={d} fn_id={d}", .{ type_idx, operand, fn_id });
                     e.call(fn_id);
                 },
                 .drop => {
