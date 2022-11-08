@@ -11,7 +11,7 @@ const math = std.math;
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
-pub const log_level = .err;
+pub const log_level = .warn;
 
 pub fn main() !void {
     const gpa = general_purpose_allocator.allocator();
@@ -184,6 +184,45 @@ pub fn main() !void {
         break :m memory;
     };
 
+    const table = t: {
+        i = section_starts[@enumToInt(wasm.Section.table)];
+        const table_count = readVarInt(module_bytes, &i, u32);
+        if (table_count != 1) return error.ExpectedOneTableSection;
+        const element_type = readVarInt(module_bytes, &i, u32);
+        const has_max = readVarInt(module_bytes, &i, u32);
+        assert(has_max == 1);
+        const initial = readVarInt(module_bytes, &i, u32);
+        const maximum = readVarInt(module_bytes, &i, u32);
+        log.debug("table element_type={x} initial={d} maximum={d}", .{
+            element_type, initial, maximum,
+        });
+
+        i = section_starts[@enumToInt(wasm.Section.element)];
+        const element_section_count = readVarInt(module_bytes, &i, u32);
+        if (element_section_count != 1) return error.ExpectedOneElementSection;
+        const flags = readVarInt(module_bytes, &i, u32);
+        log.debug("flags={x}", .{flags});
+        const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
+        i += 1;
+        assert(opcode == .i32_const);
+        const offset = readVarInt(module_bytes, &i, u32);
+        const end = @intToEnum(wasm.Opcode, module_bytes[i]);
+        assert(end == .end);
+        i += 1;
+        const elem_count = readVarInt(module_bytes, &i, u32);
+
+        log.debug("elem offset={d} count={d}", .{ offset, elem_count });
+
+        const table = try arena.alloc(u32, maximum);
+        mem.set(u32, table, 0);
+
+        var elem_i: u32 = 0;
+        while (elem_i < elem_count) : (elem_i += 1) {
+            table[elem_i + offset] = readVarInt(module_bytes, &i, u32);
+        }
+        break :t table;
+    };
+
     frames[0] = .{
         .fn_idx = 0,
         .pc = undefined,
@@ -203,6 +242,7 @@ pub fn main() !void {
         .memory = memory,
         .imports = imports,
         .args = args[1..],
+        .table = table,
     };
     exec.call(start_fn_idx);
     exec.run();
@@ -258,6 +298,7 @@ const Exec = struct {
     memory: []u8,
     imports: []const Import,
     args: []const []const u8,
+    table: []const u32,
 
     fn br(e: *Exec, label_count: u32) void {
         const frame = &frames[e.frames_index];
@@ -625,6 +666,10 @@ const Exec = struct {
             @panic("TODO implement path_remove_directory");
         } else if (mem.eql(u8, imp.sym_name, "path_unlink_file")) {
             @panic("TODO implement path_unlink_file");
+        } else if (mem.eql(u8, imp.sym_name, "debug")) {
+            const number = e.pop(u64);
+            const text = e.pop(u32);
+            wasi_debug(e, text, number);
         } else {
             std.debug.panic("unhandled import: {s}", .{imp.sym_name});
         }
@@ -749,9 +794,11 @@ const Exec = struct {
                 },
                 .call_indirect => {
                     const table_idx = readVarInt(module_bytes, pc, u32);
+                    assert(table_idx == 0);
                     const type_idx = readVarInt(module_bytes, pc, u32);
-                    log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
-                    const fn_id = e.pop(u32);
+                    const operand = e.pop(u32);
+                    const fn_id = e.table[operand];
+                    log.debug("type_idx={d} operand={d} fn_id={d}", .{ type_idx, operand, fn_id });
                     e.call(fn_id);
                 },
                 .drop => {
@@ -882,18 +929,18 @@ const Exec = struct {
                     e.push(u64, int);
                 },
                 .i32_store => {
-                    const operand = e.pop(i32);
+                    const operand = e.pop(u32);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(i32, e.memory[offset..][0..4], operand);
+                    mem.writeIntLittle(u32, e.memory[offset..][0..4], operand);
                 },
                 .i64_store => {
-                    const operand = e.pop(i64);
+                    const operand = e.pop(u64);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(i64, e.memory[offset..][0..8], operand);
+                    mem.writeIntLittle(u64, e.memory[offset..][0..8], operand);
                 },
                 .f32_store => {
                     const int = @bitCast(u32, e.pop(f32));
@@ -910,11 +957,11 @@ const Exec = struct {
                     mem.writeIntLittle(u64, e.memory[offset..][0..8], int);
                 },
                 .i32_store8 => {
-                    const operand = e.pop(u32);
+                    const small = @truncate(u8, e.pop(u32));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.memory[offset] = @truncate(u8, operand);
+                    e.memory[offset] = small;
                 },
                 .i32_store16 => {
                     const small = @truncate(u16, e.pop(u32));
@@ -1609,6 +1656,11 @@ fn wasi_args_get(e: *Exec, argv: u32, argv_buf: u32) wasi.errno_t {
     log.debug("wasi_args_get argv={d} argv_buf={d}", .{ argv, argv_buf });
     _ = e;
     @panic("TODO");
+}
+
+fn wasi_debug(e: *Exec, text: u32, n: u64) void {
+    const s = mem.sliceTo(e.memory[text..], 0);
+    log.warn("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
 }
 
 fn toWasiTimestamp(ns: i128) u64 {
