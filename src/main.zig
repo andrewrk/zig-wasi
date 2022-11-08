@@ -1742,6 +1742,7 @@ fn wasi_args_get(e: *Exec, argv: u32, argv_buf: u32) wasi.errno_t {
     @panic("TODO");
 }
 
+///pub extern "wasi_snapshot_preview1" fn debug(string: [*:0]const u8, x: u64) void;
 fn wasi_debug(e: *Exec, text: u32, n: u64) void {
     const s = mem.sliceTo(e.memory[text..], 0);
     log.warn("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
