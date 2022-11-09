@@ -326,7 +326,7 @@ const Exec = struct {
         // Taking a branch unwinds the operand stack up to the height where the
         // targeted structured control instruction was entered
         if (label.block_type >= 0) {
-            @panic("loop type gte zero");
+            unreachable;
         } else if (label.block_type == -0x40) {
             // void
             e.stack_top = label.stack_top;
@@ -346,8 +346,9 @@ const Exec = struct {
 
         // Skip forward past N end instructions.
         const module_bytes = e.module_bytes;
+        if (label_count == 0) return;
         var end_count: u32 = label_count;
-        while (end_count > 0) {
+        while (true) {
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             //cpu_log.debug("skipping over pc={d} op={s}", .{ pc.*, @tagName(op) });
             pc.* += 1;
@@ -357,11 +358,14 @@ const Exec = struct {
                     assert(module_bytes[pc.*] == 0x40);
                     pc.* += 1;
                     end_count += 1;
+                    continue;
                 },
                 .@"if" => @panic("unhandled (parse) opcode: if"),
                 .@"else" => @panic("unhandled (parse) opcode: else"),
                 .end => {
+                    if (end_count == 1) return;
                     end_count -= 1;
+                    continue;
                 },
 
                 .@"unreachable",
@@ -499,7 +503,7 @@ const Exec = struct {
                 .drop,
                 .select,
                 .@"return",
-                => {},
+                => continue,
 
                 .br,
                 .br_if,
@@ -511,6 +515,7 @@ const Exec = struct {
                 .global_set,
                 => {
                     _ = readVarInt(module_bytes, pc, u32);
+                    continue;
                 },
 
                 .i32_load,
@@ -540,6 +545,7 @@ const Exec = struct {
                 => {
                     _ = readVarInt(module_bytes, pc, u32);
                     _ = readVarInt(module_bytes, pc, u32);
+                    continue;
                 },
 
                 .br_table => {
@@ -547,22 +553,58 @@ const Exec = struct {
                     while (count > 0) : (count -= 1) {
                         _ = readVarInt(module_bytes, pc, u32);
                     }
+                    continue;
                 },
 
                 .f32_const => {
                     pc.* += 4;
+                    continue;
                 },
                 .f64_const => {
                     pc.* += 8;
+                    continue;
                 },
                 .i32_const => {
                     _ = readVarInt(module_bytes, pc, i32);
+                    continue;
                 },
                 .i64_const => {
                     _ = readVarInt(module_bytes, pc, i64);
+                    continue;
+                },
+                .prefixed => {
+                    const prefixed_op = @intToEnum(wasm.PrefixedOpcode, module_bytes[pc.*]);
+                    pc.* += 1;
+                    switch (prefixed_op) {
+                        .i32_trunc_sat_f32_s => unreachable,
+                        .i32_trunc_sat_f32_u => unreachable,
+                        .i32_trunc_sat_f64_s => unreachable,
+                        .i32_trunc_sat_f64_u => unreachable,
+                        .i64_trunc_sat_f32_s => unreachable,
+                        .i64_trunc_sat_f32_u => unreachable,
+                        .i64_trunc_sat_f64_s => unreachable,
+                        .i64_trunc_sat_f64_u => unreachable,
+                        .memory_init => unreachable,
+                        .data_drop => unreachable,
+                        .memory_copy => {
+                            pc.* += 2;
+                            continue;
+                        },
+                        .memory_fill => {
+                            pc.* += 1;
+                            continue;
+                        },
+                        .table_init => unreachable,
+                        .elem_drop => unreachable,
+                        .table_copy => unreachable,
+                        .table_grow => unreachable,
+                        .table_size => unreachable,
+                        .table_fill => unreachable,
+                        _ => unreachable,
+                    }
                 },
 
-                _ => @panic("unhandled (parse) opcode"),
+                _ => unreachable,
             }
         }
     }
@@ -1663,7 +1705,48 @@ const Exec = struct {
                 .i64_extend32_s => {
                     e.push(i64, @truncate(i32, e.pop(i64)));
                 },
-                _ => @panic("unhandled opcode"),
+                .prefixed => {
+                    const prefixed_op = @intToEnum(wasm.PrefixedOpcode, module_bytes[pc.*]);
+                    pc.* += 1;
+                    switch (prefixed_op) {
+                        .i32_trunc_sat_f32_s => unreachable,
+                        .i32_trunc_sat_f32_u => unreachable,
+                        .i32_trunc_sat_f64_s => unreachable,
+                        .i32_trunc_sat_f64_u => unreachable,
+                        .i64_trunc_sat_f32_s => unreachable,
+                        .i64_trunc_sat_f32_u => unreachable,
+                        .i64_trunc_sat_f64_s => unreachable,
+                        .i64_trunc_sat_f64_u => unreachable,
+                        .memory_init => unreachable,
+                        .data_drop => unreachable,
+                        .memory_copy => {
+                            pc.* += 2;
+                            const n = e.pop(u32);
+                            const src = e.pop(u32);
+                            const dest = e.pop(u32);
+                            assert(dest + n <= e.memory.len);
+                            assert(src + n <= e.memory.len);
+                            assert(src + n <= dest or dest + n <= src); // overlapping
+                            @memcpy(e.memory.ptr + dest, e.memory.ptr + src, n);
+                        },
+                        .memory_fill => {
+                            pc.* += 1;
+                            const n = e.pop(u32);
+                            const value = @truncate(u8, e.pop(u32));
+                            const dest = e.pop(u32);
+                            assert(dest + n <= e.memory.len);
+                            @memset(e.memory.ptr + dest, value, n);
+                        },
+                        .table_init => unreachable,
+                        .elem_drop => unreachable,
+                        .table_copy => unreachable,
+                        .table_grow => unreachable,
+                        .table_size => unreachable,
+                        .table_fill => unreachable,
+                        _ => unreachable,
+                    }
+                },
+                _ => unreachable,
             }
         }
     }
