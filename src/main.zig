@@ -676,7 +676,27 @@ const Exec = struct {
             const fd = e.pop(i32);
             e.push(u64, @enumToInt(wasi_fd_write(e, fd, iovs, iovs_len, nwritten)));
         } else if (mem.eql(u8, imp.sym_name, "path_open")) {
-            @panic("TODO implement path_open");
+            const fd = e.pop(u32);
+            const fs_flags = e.pop(u32);
+            const fs_rights_inheriting = e.pop(u64);
+            const fs_rights_base = e.pop(u64);
+            const oflags = e.pop(u32);
+            const path_len = e.pop(u32);
+            const path = e.pop(u32);
+            const dirflags = e.pop(u32);
+            const dirfd = e.pop(i32);
+            e.push(u64, @enumToInt(wasi_path_open(
+                e,
+                dirfd,
+                dirflags,
+                path,
+                path_len,
+                @intCast(u16, oflags),
+                fs_rights_base,
+                fs_rights_inheriting,
+                @intCast(u16, fs_flags),
+                fd,
+            )));
         } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
             @panic("TODO implement clock_time_get");
         } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
@@ -1752,6 +1772,56 @@ fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) was
         total_written += written;
     }
     mem.writeIntLittle(u32, e.memory[nwritten..][0..4], @intCast(u32, total_written));
+    return .SUCCESS;
+}
+
+///extern fn path_open(
+///    dirfd: fd_t,
+///    dirflags: lookupflags_t,
+///    path: [*]const u8,
+///    path_len: usize,
+///    oflags: oflags_t,
+///    fs_rights_base: rights_t,
+///    fs_rights_inheriting: rights_t,
+///    fs_flags: fdflags_t,
+///    fd: *fd_t,
+///) errno_t;
+fn wasi_path_open(
+    e: *Exec,
+    dirfd: wasi.fd_t,
+    dirflags: wasi.lookupflags_t,
+    path: u32,
+    path_len: u32,
+    oflags: wasi.oflags_t,
+    fs_rights_base: wasi.rights_t,
+    fs_rights_inheriting: wasi.rights_t,
+    fs_flags: wasi.fdflags_t,
+    fd: u32,
+) wasi.errno_t {
+    _ = dirflags;
+    _ = fs_rights_inheriting;
+    trace_log.debug("wasi_path_open <stevieeeeeee>", .{});
+    const preopen = findPreopen(dirfd) orelse return .BADF;
+    const host_path = e.memory[path..][0..path_len];
+    var flags: u32 = @as(u32, if (oflags & wasi.O.CREAT != 0) os.O.CREAT else 0) |
+        @as(u32, if (oflags & wasi.O.EXCL != 0) os.O.EXCL else 0) |
+        @as(u32, if (oflags & wasi.O.TRUNC != 0) os.O.TRUNC else 0) |
+        @as(u32, if (fs_flags & wasi.FDFLAG.APPEND != 0) os.O.APPEND else 0) |
+        @as(u32, if (fs_flags & wasi.FDFLAG.DSYNC != 0) os.O.DSYNC else 0) |
+        @as(u32, if (fs_flags & wasi.FDFLAG.NONBLOCK != 0) os.O.NONBLOCK else 0) |
+        @as(u32, if (fs_flags & wasi.FDFLAG.SYNC != 0) os.O.SYNC else 0);
+    if ((fs_rights_base & wasi.RIGHT.FD_READ != 0) and
+        (fs_rights_base & wasi.RIGHT.FD_WRITE != 0))
+    {
+        flags |= os.O.RDWR;
+    } else if (fs_rights_base & wasi.RIGHT.FD_WRITE != 0) {
+        flags |= os.O.WRONLY;
+    } else if (fs_rights_base & wasi.RIGHT.FD_READ != 0) {
+        flags |= os.O.RDONLY; // no-op because O_RDONLY is 0
+    }
+    const mode = 0o644;
+    const host_fd = os.openat(preopen.host_fd, host_path, flags, mode) catch |err| return toWasiError(err);
+    mem.writeIntLittle(i32, e.memory[fd..][0..4], host_fd);
     return .SUCCESS;
 }
 
