@@ -6,12 +6,25 @@ const mem = std.mem;
 const wasm = std.wasm;
 const wasi = std.os.wasi;
 const os = std.os;
-const log = std.log;
 const math = std.math;
+const trace_log = std.log.scoped(.trace);
+const cpu_log = std.log.scoped(.cpu);
+const func_log = std.log.scoped(.func);
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
-pub const log_level = .warn;
+pub fn log(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.EnumLiteral),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (scope == .cpu) return;
+    //if (scope == .trace) return;
+    if (scope == .func) return;
+    std.debug.print(format ++ "\n", args);
+    _ = level;
+}
 
 pub fn main() !void {
     const gpa = general_purpose_allocator.allocator();
@@ -22,13 +35,16 @@ pub fn main() !void {
 
     const args = try process.argsAlloc(arena);
 
-    const wasm_file = args[1];
+    const zig_lib_dir_path = args[1];
+    const wasm_file = args[2];
+    const vm_args = args[2..];
 
     const ten_moogieboogies = 10 * 1024 * 1024;
     const module_bytes = try fs.cwd().readFileAlloc(arena, wasm_file, ten_moogieboogies);
 
     const cwd = try fs.cwd().openDir(".", .{});
     const cache_dir = try cwd.makeOpenPath("zig1-cache", .{});
+    const zig_lib_dir = try cwd.openDir(zig_lib_dir_path, .{});
 
     addPreopen(0, "stdin", os.STDIN_FILENO);
     addPreopen(1, "stdout", os.STDOUT_FILENO);
@@ -36,6 +52,7 @@ pub fn main() !void {
     addPreopen(3, ".", cwd.fd);
     addPreopen(4, "/cwd", cwd.fd);
     addPreopen(5, "/cache", cache_dir.fd);
+    addPreopen(6, "/zig-lib", zig_lib_dir.fd);
 
     var i: u32 = 0;
 
@@ -193,7 +210,7 @@ pub fn main() !void {
         assert(has_max == 1);
         const initial = readVarInt(module_bytes, &i, u32);
         const maximum = readVarInt(module_bytes, &i, u32);
-        log.debug("table element_type={x} initial={d} maximum={d}", .{
+        cpu_log.debug("table element_type={x} initial={d} maximum={d}", .{
             element_type, initial, maximum,
         });
 
@@ -201,7 +218,7 @@ pub fn main() !void {
         const element_section_count = readVarInt(module_bytes, &i, u32);
         if (element_section_count != 1) return error.ExpectedOneElementSection;
         const flags = readVarInt(module_bytes, &i, u32);
-        log.debug("flags={x}", .{flags});
+        cpu_log.debug("flags={x}", .{flags});
         const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
         i += 1;
         assert(opcode == .i32_const);
@@ -211,7 +228,7 @@ pub fn main() !void {
         i += 1;
         const elem_count = readVarInt(module_bytes, &i, u32);
 
-        log.debug("elem offset={d} count={d}", .{ offset, elem_count });
+        cpu_log.debug("elem offset={d} count={d}", .{ offset, elem_count });
 
         const table = try arena.alloc(u32, maximum);
         mem.set(u32, table, 0);
@@ -241,7 +258,7 @@ pub fn main() !void {
         .globals = globals,
         .memory = memory,
         .imports = imports,
-        .args = args[1..],
+        .args = vm_args,
         .table = table,
     };
     exec.call(start_fn_idx);
@@ -249,7 +266,7 @@ pub fn main() !void {
 }
 
 const section_count = @typeInfo(wasm.Section).Enum.fields.len;
-var stack: [1000]u64 = undefined;
+var stack: [10000]u64 = undefined;
 var frames: [1000]Frame = undefined;
 var labels: [1000]Label = undefined;
 
@@ -302,7 +319,7 @@ const Exec = struct {
 
     fn br(e: *Exec, label_count: u32) void {
         const frame = &frames[e.frames_index];
-        //log.debug("br frame.labels_end={d} label_count={d}", .{ frame.labels_end, label_count });
+        //cpu_log.debug("br frame.labels_end={d} label_count={d}", .{ frame.labels_end, label_count });
         const pc = &frame.pc;
         const label = labels[frame.labels_end - label_count];
 
@@ -332,7 +349,7 @@ const Exec = struct {
         var end_count: u32 = label_count;
         while (end_count > 0) {
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
-            //log.debug("skipping over pc={d} op={s}", .{ pc.*, @tagName(op) });
+            //cpu_log.debug("skipping over pc={d} op={s}", .{ pc.*, @tagName(op) });
             pc.* += 1;
             switch (op) {
                 .block, .loop => {
@@ -578,7 +595,7 @@ const Exec = struct {
             locals_count += current_count;
         }
 
-        log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_arity: {d}, locals_begin: {d}, locals_count: {d}", .{
+        func_log.debug("fn_idx: {d}, type_idx: {d}, param_count: {d}, return_arity: {d}, locals_begin: {d}, locals_count: {d}", .{
             fn_idx, func.type_idx, param_count, return_arity, locals_begin, locals_count,
         });
 
@@ -641,7 +658,9 @@ const Exec = struct {
         } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
             @panic("TODO implement environ_get");
         } else if (mem.eql(u8, imp.sym_name, "fd_fdstat_get")) {
-            @panic("TODO implement fd_fdstat_get");
+            const buf = e.pop(u32);
+            const fd = e.pop(i32);
+            e.push(u64, @enumToInt(wasi_fd_fdstat_get(e, fd, buf)));
         } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
             @panic("TODO implement path_filestat_get");
         } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
@@ -670,6 +689,10 @@ const Exec = struct {
             const number = e.pop(u64);
             const text = e.pop(u32);
             wasi_debug(e, text, number);
+        } else if (mem.eql(u8, imp.sym_name, "debug_slice")) {
+            const len = e.pop(u32);
+            const ptr = e.pop(u32);
+            wasi_debug_slice(e, ptr, len);
         } else {
             std.debug.panic("unhandled import: {s}", .{imp.sym_name});
         }
@@ -710,11 +733,11 @@ const Exec = struct {
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
             if (e.stack_top > 0) {
-                log.debug("stack[{d}]={x} pc={d}, op={s}", .{
+                cpu_log.debug("stack[{d}]={x} pc={d}, op={s}", .{
                     e.stack_top - 1, stack[e.stack_top - 1], pc.*, @tagName(op),
                 });
             } else {
-                log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
+                cpu_log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
             }
             switch (op) {
                 .@"unreachable" => @panic("unreachable"),
@@ -727,7 +750,7 @@ const Exec = struct {
                         .stack_top = e.stack_top,
                     };
                     frame.labels_end += 1;
-                    //log.debug("set labels_end={d}", .{frame.labels_end});
+                    //cpu_log.debug("set labels_end={d}", .{frame.labels_end});
                 },
                 .loop => {
                     const block_type = readVarInt(module_bytes, pc, i32);
@@ -737,13 +760,13 @@ const Exec = struct {
                         .stack_top = e.stack_top,
                     };
                     frame.labels_end += 1;
-                    //log.debug("set labels_end={d}", .{frame.labels_end});
+                    //cpu_log.debug("set labels_end={d}", .{frame.labels_end});
                 },
                 .@"if" => @panic("unhandled opcode: if"),
                 .@"else" => @panic("unhandled opcode: else"),
                 .end => {
                     const prev_frame = &frames[e.frames_index - 1];
-                    //log.debug("labels_end {d}-- (base: {d}) arity={d}", .{
+                    //cpu_log.debug("labels_end {d}-- (base: {d}) arity={d}", .{
                     //    frame.labels_end, prev_frame.labels_end, frame.return_arity,
                     //});
                     if (frame.labels_end == prev_frame.labels_end) {
@@ -795,7 +818,7 @@ const Exec = struct {
                 .call_indirect => {
                     const type_idx = readVarInt(module_bytes, pc, u32);
                     const table_idx = readVarInt(module_bytes, pc, u32);
-                    log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
+                    cpu_log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
                     assert(table_idx == 0);
                     const operand = e.pop(u32);
                     const fn_id = e.table[operand];
@@ -813,18 +836,18 @@ const Exec = struct {
                 },
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    //log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
+                    //cpu_log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
                     const val = stack[idx + frame.locals_begin];
                     e.push(u64, val);
                 },
                 .local_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    //log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
+                    //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     stack[idx + frame.locals_begin] = e.pop(u64);
                 },
                 .local_tee => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    //log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
+                    //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     stack[idx + frame.locals_begin] = stack[e.stack_top - 1];
                 },
                 .global_get => {
@@ -1632,13 +1655,29 @@ fn readFloat64(bytes: []const u8, i: *u32) f64 {
 
 /// fn args_sizes_get(argc: *usize, argv_buf_size: *usize) errno_t;
 fn wasi_args_sizes_get(e: *Exec, argc: u32, argv_buf_size: u32) wasi.errno_t {
-    log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
+    trace_log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
     mem.writeIntLittle(u32, e.memory[argc..][0..4], @intCast(u32, e.args.len));
     var buf_size: usize = 0;
     for (e.args) |arg| {
         buf_size += arg.len + 1;
     }
     mem.writeIntLittle(u32, e.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
+    return .SUCCESS;
+}
+
+/// extern fn args_get(argv: [*][*:0]u8, argv_buf: [*]u8) errno_t;
+fn wasi_args_get(e: *Exec, argv: u32, argv_buf: u32) wasi.errno_t {
+    trace_log.debug("wasi_args_get argv={d} argv_buf={d}", .{ argv, argv_buf });
+    var argv_buf_i: usize = 0;
+    for (e.args) |arg, arg_i| {
+        // Write the arg to the buffer.
+        const argv_ptr = argv_buf + argv_buf_i;
+        mem.copy(u8, e.memory[argv_buf + argv_buf_i ..], arg);
+        e.memory[argv_buf + argv_buf_i + arg.len] = 0;
+        argv_buf_i += arg.len + 1;
+
+        mem.writeIntLittle(u32, e.memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
+    }
     return .SUCCESS;
 }
 
@@ -1675,7 +1714,7 @@ fn findPreopen(wasi_fd: i32) ?Preopen {
 ///     u: usize,
 /// };
 fn wasi_fd_prestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
-    log.debug("wasi_fd_prestat_get fd={d} buf={d}", .{ fd, buf });
+    trace_log.debug("wasi_fd_prestat_get fd={d} buf={d}", .{ fd, buf });
     const preopen = findPreopen(fd) orelse return .BADF;
     mem.writeIntLittle(u32, e.memory[buf + 0 ..][0..4], 0);
     mem.writeIntLittle(u32, e.memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
@@ -1684,7 +1723,7 @@ fn wasi_fd_prestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
 
 /// fn fd_prestat_dir_name(fd: fd_t, path: [*]u8, path_len: usize) errno_t;
 fn wasi_fd_prestat_dir_name(e: *Exec, fd: i32, path: u32, path_len: u32) wasi.errno_t {
-    log.debug("wasi_fd_prestat_dir_name fd={d} path={d} path_len={d}", .{ fd, path, path_len });
+    trace_log.debug("wasi_fd_prestat_dir_name fd={d} path={d} path_len={d}", .{ fd, path, path_len });
     const preopen = findPreopen(fd) orelse return .BADF;
     assert(path_len == preopen.name.len);
     mem.copy(u8, e.memory[path..], preopen.name);
@@ -1697,7 +1736,7 @@ fn wasi_fd_prestat_dir_name(e: *Exec, fd: i32, path: u32, path_len: u32) wasi.er
 ///     len: usize,
 /// };
 fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) wasi.errno_t {
-    log.debug("wasi_fd_write fd={d} iovs={d} iovs_len={d} nwritten={d}", .{
+    trace_log.debug("wasi_fd_write fd={d} iovs={d} iovs_len={d} nwritten={d}", .{
         fd, iovs, iovs_len, nwritten,
     });
     const preopen = findPreopen(fd) orelse return .BADF;
@@ -1706,7 +1745,7 @@ fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) was
     while (i < iovs_len) : (i += 1) {
         const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
         const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
-        log.debug("ptr={d} len={d}", .{ ptr, len });
+        trace_log.debug("ptr={d} len={d}", .{ ptr, len });
         const buf = e.memory[ptr..][0..len];
         const written = os.write(preopen.host_fd, buf) catch |err| return toWasiError(err);
         if (written == 0) break;
@@ -1728,7 +1767,7 @@ fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) was
 ///     ctim: timestamp_t, u64
 /// };
 fn wasi_fd_filestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
-    log.debug("wasi_fd_filestat_get fd={d} buf={d}", .{ fd, buf });
+    trace_log.debug("wasi_fd_filestat_get fd={d} buf={d}", .{ fd, buf });
     const preopen = findPreopen(fd) orelse return .BADF;
     const file = fs.File{ .handle = preopen.host_fd };
     const stat = file.stat() catch |err| return toWasiError(err);
@@ -1743,17 +1782,35 @@ fn wasi_fd_filestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
     return .SUCCESS;
 }
 
-/// extern fn args_get(argv: [*][*:0]u8, argv_buf: [*]u8) errno_t;
-fn wasi_args_get(e: *Exec, argv: u32, argv_buf: u32) wasi.errno_t {
-    log.debug("wasi_args_get argv={d} argv_buf={d}", .{ argv, argv_buf });
-    _ = e;
-    @panic("TODO");
+/// pub extern "wasi_snapshot_preview1" fn fd_fdstat_get(fd: fd_t, buf: *fdstat_t) errno_t;
+/// pub const fdstat_t = extern struct {
+///     fs_filetype: filetype_t, u8
+///     fs_flags: fdflags_t, u16
+///     fs_rights_base: rights_t, u64
+///     fs_rights_inheriting: rights_t, u64
+/// };
+fn wasi_fd_fdstat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
+    trace_log.debug("wasi_fd_fdstat_get fd={d} buf={d}", .{ fd, buf });
+    const preopen = findPreopen(fd) orelse return .BADF;
+    const file = fs.File{ .handle = preopen.host_fd };
+    const stat = file.stat() catch |err| return toWasiError(err);
+    mem.writeIntLittle(u16, e.memory[buf + 0x00 ..][0..2], @enumToInt(toWasiFileType(stat.kind)));
+    mem.writeIntLittle(u16, e.memory[buf + 0x02 ..][0..2], 0); // flags
+    mem.writeIntLittle(u64, e.memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
+    mem.writeIntLittle(u64, e.memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
+    return .SUCCESS;
 }
 
 ///pub extern "wasi_snapshot_preview1" fn debug(string: [*:0]const u8, x: u64) void;
 fn wasi_debug(e: *Exec, text: u32, n: u64) void {
     const s = mem.sliceTo(e.memory[text..], 0);
-    log.warn("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
+    trace_log.debug("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
+}
+
+/// pub extern "wasi_snapshot_preview1" fn debug_slice(ptr: [*]const u8, len: usize) void;
+fn wasi_debug_slice(e: *Exec, ptr: u32, len: u32) void {
+    const s = e.memory[ptr..][0..len];
+    trace_log.debug("wasi_debug_slice: '{s}'", .{s});
 }
 
 fn toWasiTimestamp(ns: i128) u64 {
