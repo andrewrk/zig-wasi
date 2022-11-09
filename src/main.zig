@@ -626,17 +626,6 @@ const Exec = struct {
             const path = e.pop(u32);
             const fd = e.pop(i32);
             e.push(u64, @enumToInt(wasi_fd_prestat_dir_name(e, fd, path, path_len)));
-        } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
-            std.process.exit(@intCast(u8, e.pop(u32)));
-            unreachable;
-        } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
-            const argv_buf_size = e.pop(u32);
-            const argc = e.pop(u32);
-            e.push(u64, @enumToInt(wasi_args_sizes_get(e, argc, argv_buf_size)));
-        } else if (mem.eql(u8, imp.sym_name, "args_get")) {
-            const argv_buf = e.pop(u32);
-            const argv = e.pop(u32);
-            e.push(u64, @enumToInt(wasi_args_get(e, argv, argv_buf)));
         } else if (mem.eql(u8, imp.sym_name, "fd_close")) {
             @panic("TODO implement fd_close");
         } else if (mem.eql(u8, imp.sym_name, "fd_read")) {
@@ -649,24 +638,12 @@ const Exec = struct {
             @panic("TODO implement fd_filestat_set_size");
         } else if (mem.eql(u8, imp.sym_name, "fd_pwrite")) {
             @panic("TODO implement fd_pwrite");
-        } else if (mem.eql(u8, imp.sym_name, "random_get")) {
-            @panic("TODO implement random_get");
         } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_times")) {
             @panic("TODO implement fd_filestat_set_times");
-        } else if (mem.eql(u8, imp.sym_name, "environ_sizes_get")) {
-            @panic("TODO implement environ_sizes_get");
-        } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
-            @panic("TODO implement environ_get");
         } else if (mem.eql(u8, imp.sym_name, "fd_fdstat_get")) {
             const buf = e.pop(u32);
             const fd = e.pop(i32);
             e.push(u64, @enumToInt(wasi_fd_fdstat_get(e, fd, buf)));
-        } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
-            @panic("TODO implement path_filestat_get");
-        } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
-            @panic("TODO implement path_create_directory");
-        } else if (mem.eql(u8, imp.sym_name, "path_rename")) {
-            @panic("TODO implement path_rename");
         } else if (mem.eql(u8, imp.sym_name, "fd_readdir")) {
             @panic("TODO implement fd_readdir");
         } else if (mem.eql(u8, imp.sym_name, "fd_write")) {
@@ -675,6 +652,34 @@ const Exec = struct {
             const iovs = e.pop(u32);
             const fd = e.pop(i32);
             e.push(u64, @enumToInt(wasi_fd_write(e, fd, iovs, iovs_len, nwritten)));
+        } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
+            std.process.exit(@intCast(u8, e.pop(u32)));
+            unreachable;
+        } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
+            const argv_buf_size = e.pop(u32);
+            const argc = e.pop(u32);
+            e.push(u64, @enumToInt(wasi_args_sizes_get(e, argc, argv_buf_size)));
+        } else if (mem.eql(u8, imp.sym_name, "args_get")) {
+            const argv_buf = e.pop(u32);
+            const argv = e.pop(u32);
+            e.push(u64, @enumToInt(wasi_args_get(e, argv, argv_buf)));
+        } else if (mem.eql(u8, imp.sym_name, "random_get")) {
+            @panic("TODO implement random_get");
+        } else if (mem.eql(u8, imp.sym_name, "environ_sizes_get")) {
+            @panic("TODO implement environ_sizes_get");
+        } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
+            @panic("TODO implement environ_get");
+        } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
+            const buf = e.pop(u32);
+            const path_len = e.pop(u32);
+            const path = e.pop(u32);
+            const flags = e.pop(u32);
+            const fd = e.pop(i32);
+            e.push(u64, @enumToInt(wasi_path_filestat_get(e, fd, flags, path, path_len, buf)));
+        } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
+            @panic("TODO implement path_create_directory");
+        } else if (mem.eql(u8, imp.sym_name, "path_rename")) {
+            @panic("TODO implement path_rename");
         } else if (mem.eql(u8, imp.sym_name, "path_open")) {
             const fd = e.pop(u32);
             const fs_flags = e.pop(u32);
@@ -697,14 +702,14 @@ const Exec = struct {
                 @intCast(u16, fs_flags),
                 fd,
             )));
-        } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
-            @panic("TODO implement clock_time_get");
-        } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
-            @panic("TODO implement fd_pread");
         } else if (mem.eql(u8, imp.sym_name, "path_remove_directory")) {
             @panic("TODO implement path_remove_directory");
         } else if (mem.eql(u8, imp.sym_name, "path_unlink_file")) {
             @panic("TODO implement path_unlink_file");
+        } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
+            @panic("TODO implement clock_time_get");
+        } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
+            @panic("TODO implement fd_pread");
         } else if (mem.eql(u8, imp.sym_name, "debug")) {
             const number = e.pop(u64);
             const text = e.pop(u32);
@@ -1705,12 +1710,12 @@ var preopens_buffer: [10]Preopen = undefined;
 var preopens_len: usize = 0;
 
 const Preopen = struct {
-    wasi_fd: i32,
+    wasi_fd: wasi.fd_t,
     name: []const u8,
     host_fd: os.fd_t,
 };
 
-fn addPreopen(wasi_fd: i32, name: []const u8, host_fd: os.fd_t) void {
+fn addPreopen(wasi_fd: wasi.fd_t, name: []const u8, host_fd: os.fd_t) void {
     preopens_buffer[preopens_len] = .{
         .wasi_fd = wasi_fd,
         .name = name,
@@ -1719,7 +1724,7 @@ fn addPreopen(wasi_fd: i32, name: []const u8, host_fd: os.fd_t) void {
     preopens_len += 1;
 }
 
-fn findPreopen(wasi_fd: i32) ?Preopen {
+fn findPreopen(wasi_fd: wasi.fd_t) ?Preopen {
     for (preopens_buffer[0..preopens_len]) |preopen| {
         if (preopen.wasi_fd == wasi_fd) {
             return preopen;
@@ -1728,12 +1733,17 @@ fn findPreopen(wasi_fd: i32) ?Preopen {
     return null;
 }
 
+fn toHostFd(wasi_fd: wasi.fd_t) os.fd_t {
+    const preopen = findPreopen(wasi_fd) orelse return wasi_fd;
+    return preopen.host_fd;
+}
+
 /// fn fd_prestat_get(fd: fd_t, buf: *prestat_t) errno_t;
 /// const prestat_t = extern struct {
 ///     pr_type: u8,
 ///     u: usize,
 /// };
-fn wasi_fd_prestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
+fn wasi_fd_prestat_get(e: *Exec, fd: wasi.fd_t, buf: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_prestat_get fd={d} buf={d}", .{ fd, buf });
     const preopen = findPreopen(fd) orelse return .BADF;
     mem.writeIntLittle(u32, e.memory[buf + 0 ..][0..4], 0);
@@ -1742,7 +1752,7 @@ fn wasi_fd_prestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
 }
 
 /// fn fd_prestat_dir_name(fd: fd_t, path: [*]u8, path_len: usize) errno_t;
-fn wasi_fd_prestat_dir_name(e: *Exec, fd: i32, path: u32, path_len: u32) wasi.errno_t {
+fn wasi_fd_prestat_dir_name(e: *Exec, fd: wasi.fd_t, path: u32, path_len: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_prestat_dir_name fd={d} path={d} path_len={d}", .{ fd, path, path_len });
     const preopen = findPreopen(fd) orelse return .BADF;
     assert(path_len == preopen.name.len);
@@ -1755,11 +1765,11 @@ fn wasi_fd_prestat_dir_name(e: *Exec, fd: i32, path: u32, path_len: u32) wasi.er
 ///     base: [*]const u8,
 ///     len: usize,
 /// };
-fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) wasi.errno_t {
+fn wasi_fd_write(e: *Exec, fd: wasi.fd_t, iovs: u32, iovs_len: u32, nwritten: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_write fd={d} iovs={d} iovs_len={d} nwritten={d}", .{
         fd, iovs, iovs_len, nwritten,
     });
-    const preopen = findPreopen(fd) orelse return .BADF;
+    const host_fd = toHostFd(fd);
     var i: u32 = 0;
     var total_written: usize = 0;
     while (i < iovs_len) : (i += 1) {
@@ -1767,7 +1777,7 @@ fn wasi_fd_write(e: *Exec, fd: i32, iovs: u32, iovs_len: u32, nwritten: u32) was
         const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
         trace_log.debug("ptr={d} len={d}", .{ ptr, len });
         const buf = e.memory[ptr..][0..len];
-        const written = os.write(preopen.host_fd, buf) catch |err| return toWasiError(err);
+        const written = os.write(host_fd, buf) catch |err| return toWasiError(err);
         if (written == 0) break;
         total_written += written;
     }
@@ -1800,9 +1810,9 @@ fn wasi_path_open(
 ) wasi.errno_t {
     _ = dirflags;
     _ = fs_rights_inheriting;
-    trace_log.debug("wasi_path_open <stevieeeeeee>", .{});
-    const preopen = findPreopen(dirfd) orelse return .BADF;
-    const host_path = e.memory[path..][0..path_len];
+    trace_log.debug("wasi_path_open", .{});
+    const host_fd = toHostFd(dirfd);
+    const sub_path = e.memory[path..][0..path_len];
     var flags: u32 = @as(u32, if (oflags & wasi.O.CREAT != 0) os.O.CREAT else 0) |
         @as(u32, if (oflags & wasi.O.EXCL != 0) os.O.EXCL else 0) |
         @as(u32, if (oflags & wasi.O.TRUNC != 0) os.O.TRUNC else 0) |
@@ -1820,9 +1830,27 @@ fn wasi_path_open(
         flags |= os.O.RDONLY; // no-op because O_RDONLY is 0
     }
     const mode = 0o644;
-    const host_fd = os.openat(preopen.host_fd, host_path, flags, mode) catch |err| return toWasiError(err);
-    mem.writeIntLittle(i32, e.memory[fd..][0..4], host_fd);
+    const res_fd = os.openat(host_fd, sub_path, flags, mode) catch |err| return toWasiError(err);
+    mem.writeIntLittle(i32, e.memory[fd..][0..4], res_fd);
     return .SUCCESS;
+}
+
+fn wasi_path_filestat_get(
+    e: *Exec,
+    fd: wasi.fd_t,
+    flags: wasi.lookupflags_t,
+    path: u32, // [*]const u8
+    path_len: u32, // usize
+    buf: u32, // *filestat_t
+) wasi.errno_t {
+    trace_log.debug("wasi_path_filestat_get fd={d} flags={d} path={d} path_len={d} buf={d}", .{
+        fd, flags, path, path_len, buf,
+    });
+    const host_fd = toHostFd(fd);
+    const sub_path = e.memory[path..][0..path_len];
+    const dir: fs.Dir = .{ .fd = host_fd };
+    const stat = dir.statFile(sub_path) catch |err| return toWasiError(err);
+    return finishWasiStat(e, buf, stat);
 }
 
 /// extern fn fd_filestat_get(fd: fd_t, buf: *filestat_t) errno_t;
@@ -1836,20 +1864,12 @@ fn wasi_path_open(
 ///     mtim: timestamp_t, u64
 ///     ctim: timestamp_t, u64
 /// };
-fn wasi_fd_filestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
+fn wasi_fd_filestat_get(e: *Exec, fd: wasi.fd_t, buf: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_filestat_get fd={d} buf={d}", .{ fd, buf });
-    const preopen = findPreopen(fd) orelse return .BADF;
-    const file = fs.File{ .handle = preopen.host_fd };
+    const host_fd = toHostFd(fd);
+    const file = fs.File{ .handle = host_fd };
     const stat = file.stat() catch |err| return toWasiError(err);
-    mem.writeIntLittle(u64, e.memory[buf + 0x00 ..][0..8], 0); // device
-    mem.writeIntLittle(u64, e.memory[buf + 0x10 ..][0..8], stat.inode);
-    mem.writeIntLittle(u64, e.memory[buf + 0x18 ..][0..8], @enumToInt(toWasiFileType(stat.kind)));
-    mem.writeIntLittle(u64, e.memory[buf + 0x20 ..][0..8], 1); // nlink
-    mem.writeIntLittle(u64, e.memory[buf + 0x28 ..][0..8], stat.size);
-    mem.writeIntLittle(u64, e.memory[buf + 0x30 ..][0..8], toWasiTimestamp(stat.atime));
-    mem.writeIntLittle(u64, e.memory[buf + 0x38 ..][0..8], toWasiTimestamp(stat.mtime));
-    mem.writeIntLittle(u64, e.memory[buf + 0x40 ..][0..8], toWasiTimestamp(stat.ctime));
-    return .SUCCESS;
+    return finishWasiStat(e, buf, stat);
 }
 
 /// pub extern "wasi_snapshot_preview1" fn fd_fdstat_get(fd: fd_t, buf: *fdstat_t) errno_t;
@@ -1859,10 +1879,10 @@ fn wasi_fd_filestat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
 ///     fs_rights_base: rights_t, u64
 ///     fs_rights_inheriting: rights_t, u64
 /// };
-fn wasi_fd_fdstat_get(e: *Exec, fd: i32, buf: u32) wasi.errno_t {
+fn wasi_fd_fdstat_get(e: *Exec, fd: wasi.fd_t, buf: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_fdstat_get fd={d} buf={d}", .{ fd, buf });
-    const preopen = findPreopen(fd) orelse return .BADF;
-    const file = fs.File{ .handle = preopen.host_fd };
+    const host_fd = toHostFd(fd);
+    const file = fs.File{ .handle = host_fd };
     const stat = file.stat() catch |err| return toWasiError(err);
     mem.writeIntLittle(u16, e.memory[buf + 0x00 ..][0..2], @enumToInt(toWasiFileType(stat.kind)));
     mem.writeIntLittle(u16, e.memory[buf + 0x02 ..][0..2], 0); // flags
@@ -1897,6 +1917,7 @@ fn toWasiError(err: anyerror) wasi.errno_t {
         error.BrokenPipe => .PIPE,
         error.NotOpenForWriting => .BADF,
         error.SystemResources => .NOMEM,
+        error.FileNotFound => .NOENT,
         else => std.debug.panic("unexpected error: {s}", .{@errorName(err)}),
     };
 }
@@ -1917,4 +1938,16 @@ fn toWasiFileType(kind: fs.File.Kind) wasi.filetype_t {
         .EventPort,
         => .UNKNOWN,
     };
+}
+
+fn finishWasiStat(e: *Exec, buf: u32, stat: fs.File.Stat) wasi.errno_t {
+    mem.writeIntLittle(u64, e.memory[buf + 0x00 ..][0..8], 0); // device
+    mem.writeIntLittle(u64, e.memory[buf + 0x10 ..][0..8], stat.inode);
+    mem.writeIntLittle(u64, e.memory[buf + 0x18 ..][0..8], @enumToInt(toWasiFileType(stat.kind)));
+    mem.writeIntLittle(u64, e.memory[buf + 0x20 ..][0..8], 1); // nlink
+    mem.writeIntLittle(u64, e.memory[buf + 0x28 ..][0..8], stat.size);
+    mem.writeIntLittle(u64, e.memory[buf + 0x30 ..][0..8], toWasiTimestamp(stat.atime));
+    mem.writeIntLittle(u64, e.memory[buf + 0x38 ..][0..8], toWasiTimestamp(stat.mtime));
+    mem.writeIntLittle(u64, e.memory[buf + 0x40 ..][0..8], toWasiTimestamp(stat.ctime));
+    return .SUCCESS;
 }
