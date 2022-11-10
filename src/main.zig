@@ -249,7 +249,7 @@ pub fn main() !void {
         .return_arity = 0,
     };
 
-    var exec: Exec = .{
+    var vm: VirtualMachine = .{
         .stack = try arena.alloc(u64, 10000000),
         .module_bytes = module_bytes,
         .stack_top = 0,
@@ -262,8 +262,8 @@ pub fn main() !void {
         .args = vm_args,
         .table = table,
     };
-    exec.call(start_fn_idx);
-    exec.run();
+    vm.call(start_fn_idx);
+    vm.run();
 }
 
 const section_count = @typeInfo(wasm.Section).Enum.fields.len;
@@ -303,7 +303,7 @@ const Import = struct {
     mod_name: []const u8,
 };
 
-const Exec = struct {
+const VirtualMachine = struct {
     stack: []u64,
     /// Points to one after the last stack item.
     stack_top: u32,
@@ -318,8 +318,8 @@ const Exec = struct {
     args: []const []const u8,
     table: []const u32,
 
-    fn br(e: *Exec, label_count: u32) void {
-        const frame = &frames[e.frames_index];
+    fn br(vm: *VirtualMachine, label_count: u32) void {
+        const frame = &frames[vm.frames_index];
         //cpu_log.debug("br frame.labels_end={d} label_count={d}", .{ frame.labels_end, label_count });
         const pc = &frame.pc;
         const label = labels[frame.labels_end - label_count];
@@ -330,11 +330,11 @@ const Exec = struct {
             unreachable;
         } else if (label.block_type == -0x40) {
             // void
-            e.stack_top = label.stack_top;
+            vm.stack_top = label.stack_top;
         } else {
             // one result value
-            e.stack[label.stack_top] = e.stack[e.stack_top - 1];
-            e.stack_top = label.stack_top + 1;
+            vm.stack[label.stack_top] = vm.stack[vm.stack_top - 1];
+            vm.stack_top = label.stack_top + 1;
         }
 
         if (label.loop_pc != 0) {
@@ -346,7 +346,7 @@ const Exec = struct {
         frame.labels_end -= label_count;
 
         // Skip forward past N end instructions.
-        const module_bytes = e.module_bytes;
+        const module_bytes = vm.module_bytes;
         if (label_count == 0) return;
         var end_count: u32 = label_count;
         while (true) {
@@ -609,15 +609,15 @@ const Exec = struct {
         }
     }
 
-    fn call(e: *Exec, fn_id: u32) void {
-        if (fn_id < e.imports.len) {
-            const imp = e.imports[fn_id];
-            return callImport(e, imp);
+    fn call(vm: *VirtualMachine, fn_id: u32) void {
+        if (fn_id < vm.imports.len) {
+            const imp = vm.imports[fn_id];
+            return callImport(vm, imp);
         }
-        const fn_idx = fn_id - @intCast(u32, e.imports.len);
-        const module_bytes = e.module_bytes;
-        const func = e.functions[fn_idx];
-        var i: u32 = e.types[func.type_idx];
+        const fn_idx = fn_id - @intCast(u32, vm.imports.len);
+        const module_bytes = vm.module_bytes;
+        const func = vm.functions[fn_idx];
+        var i: u32 = vm.types[func.type_idx];
         assert(module_bytes[i] == 0x60);
         i += 1;
         const param_count = readVarInt(module_bytes, &i, u32);
@@ -625,7 +625,7 @@ const Exec = struct {
         const return_arity = readVarInt(module_bytes, &i, u32);
         i += return_arity;
 
-        const locals_begin = e.stack_top - param_count;
+        const locals_begin = vm.stack_top - param_count;
 
         i = func.code;
         var locals_count: u32 = 0;
@@ -642,110 +642,110 @@ const Exec = struct {
         });
 
         // Push zeroed locals to stack
-        mem.set(u64, e.stack[e.stack_top..][0..locals_count], 0);
-        e.stack_top += locals_count;
+        mem.set(u64, vm.stack[vm.stack_top..][0..locals_count], 0);
+        vm.stack_top += locals_count;
 
-        const prev_labels_end = frames[e.frames_index].labels_end;
+        const prev_labels_end = frames[vm.frames_index].labels_end;
 
-        e.frames_index += 1;
-        frames[e.frames_index] = .{
+        vm.frames_index += 1;
+        frames[vm.frames_index] = .{
             .fn_idx = fn_idx,
             .return_arity = return_arity,
             .pc = i,
-            .stack_begin = e.stack_top,
+            .stack_begin = vm.stack_top,
             .locals_begin = locals_begin,
             .labels_end = prev_labels_end,
         };
     }
 
-    fn callImport(e: *Exec, imp: Import) void {
+    fn callImport(vm: *VirtualMachine, imp: Import) void {
         if (mem.eql(u8, imp.sym_name, "fd_prestat_get")) {
-            const buf = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_prestat_get(e, fd, buf)));
+            const buf = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_prestat_get(vm, fd, buf)));
         } else if (mem.eql(u8, imp.sym_name, "fd_prestat_dir_name")) {
-            const path_len = e.pop(u32);
-            const path = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_prestat_dir_name(e, fd, path, path_len)));
+            const path_len = vm.pop(u32);
+            const path = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_prestat_dir_name(vm, fd, path, path_len)));
         } else if (mem.eql(u8, imp.sym_name, "fd_close")) {
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_close(e, fd)));
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_close(vm, fd)));
         } else if (mem.eql(u8, imp.sym_name, "fd_read")) {
-            const nread = e.pop(u32);
-            const iovs_len = e.pop(u32);
-            const iovs = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_read(e, fd, iovs, iovs_len, nread)));
+            const nread = vm.pop(u32);
+            const iovs_len = vm.pop(u32);
+            const iovs = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_read(vm, fd, iovs, iovs_len, nread)));
         } else if (mem.eql(u8, imp.sym_name, "fd_filestat_get")) {
-            const buf = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_filestat_get(e, fd, buf)));
+            const buf = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_filestat_get(vm, fd, buf)));
         } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_size")) {
-            const size = e.pop(u64);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_filestat_set_size(e, fd, size)));
+            const size = vm.pop(u64);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_filestat_set_size(vm, fd, size)));
         } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_times")) {
             @panic("TODO implement fd_filestat_set_times");
         } else if (mem.eql(u8, imp.sym_name, "fd_fdstat_get")) {
-            const buf = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_fdstat_get(e, fd, buf)));
+            const buf = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_fdstat_get(vm, fd, buf)));
         } else if (mem.eql(u8, imp.sym_name, "fd_readdir")) {
             @panic("TODO implement fd_readdir");
         } else if (mem.eql(u8, imp.sym_name, "fd_write")) {
-            const nwritten = e.pop(u32);
-            const iovs_len = e.pop(u32);
-            const iovs = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_write(e, fd, iovs, iovs_len, nwritten)));
+            const nwritten = vm.pop(u32);
+            const iovs_len = vm.pop(u32);
+            const iovs = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_write(vm, fd, iovs, iovs_len, nwritten)));
         } else if (mem.eql(u8, imp.sym_name, "fd_pwrite")) {
-            const nwritten = e.pop(u32);
-            const offset = e.pop(u64);
-            const iovs_len = e.pop(u32);
-            const iovs = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_fd_pwrite(e, fd, iovs, iovs_len, offset, nwritten)));
+            const nwritten = vm.pop(u32);
+            const offset = vm.pop(u64);
+            const iovs_len = vm.pop(u32);
+            const iovs = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_fd_pwrite(vm, fd, iovs, iovs_len, offset, nwritten)));
         } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
-            std.process.exit(@intCast(u8, e.pop(u32)));
+            std.process.exit(@intCast(u8, vm.pop(u32)));
             unreachable;
         } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
-            const argv_buf_size = e.pop(u32);
-            const argc = e.pop(u32);
-            e.push(u64, @enumToInt(wasi_args_sizes_get(e, argc, argv_buf_size)));
+            const argv_buf_size = vm.pop(u32);
+            const argc = vm.pop(u32);
+            vm.push(u64, @enumToInt(wasi_args_sizes_get(vm, argc, argv_buf_size)));
         } else if (mem.eql(u8, imp.sym_name, "args_get")) {
-            const argv_buf = e.pop(u32);
-            const argv = e.pop(u32);
-            e.push(u64, @enumToInt(wasi_args_get(e, argv, argv_buf)));
+            const argv_buf = vm.pop(u32);
+            const argv = vm.pop(u32);
+            vm.push(u64, @enumToInt(wasi_args_get(vm, argv, argv_buf)));
         } else if (mem.eql(u8, imp.sym_name, "random_get")) {
-            const buf_len = e.pop(u32);
-            const buf = e.pop(u32);
-            e.push(u64, @enumToInt(wasi_random_get(e, buf, buf_len)));
+            const buf_len = vm.pop(u32);
+            const buf = vm.pop(u32);
+            vm.push(u64, @enumToInt(wasi_random_get(vm, buf, buf_len)));
         } else if (mem.eql(u8, imp.sym_name, "environ_sizes_get")) {
             @panic("TODO implement environ_sizes_get");
         } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
             @panic("TODO implement environ_get");
         } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
-            const buf = e.pop(u32);
-            const path_len = e.pop(u32);
-            const path = e.pop(u32);
-            const flags = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_path_filestat_get(e, fd, flags, path, path_len, buf)));
+            const buf = vm.pop(u32);
+            const path_len = vm.pop(u32);
+            const path = vm.pop(u32);
+            const flags = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_path_filestat_get(vm, fd, flags, path, path_len, buf)));
         } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
-            const path_len = e.pop(u32);
-            const path = e.pop(u32);
-            const fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_path_create_directory(e, fd, path, path_len)));
+            const path_len = vm.pop(u32);
+            const path = vm.pop(u32);
+            const fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_path_create_directory(vm, fd, path, path_len)));
         } else if (mem.eql(u8, imp.sym_name, "path_rename")) {
-            const new_path_len = e.pop(u32);
-            const new_path = e.pop(u32);
-            const new_fd = e.pop(i32);
-            const old_path_len = e.pop(u32);
-            const old_path = e.pop(u32);
-            const old_fd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_path_rename(
-                e,
+            const new_path_len = vm.pop(u32);
+            const new_path = vm.pop(u32);
+            const new_fd = vm.pop(i32);
+            const old_path_len = vm.pop(u32);
+            const old_path = vm.pop(u32);
+            const old_fd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_path_rename(
+                vm,
                 old_fd,
                 old_path,
                 old_path_len,
@@ -754,17 +754,17 @@ const Exec = struct {
                 new_path_len,
             )));
         } else if (mem.eql(u8, imp.sym_name, "path_open")) {
-            const fd = e.pop(u32);
-            const fs_flags = e.pop(u32);
-            const fs_rights_inheriting = e.pop(u64);
-            const fs_rights_base = e.pop(u64);
-            const oflags = e.pop(u32);
-            const path_len = e.pop(u32);
-            const path = e.pop(u32);
-            const dirflags = e.pop(u32);
-            const dirfd = e.pop(i32);
-            e.push(u64, @enumToInt(wasi_path_open(
-                e,
+            const fd = vm.pop(u32);
+            const fs_flags = vm.pop(u32);
+            const fs_rights_inheriting = vm.pop(u64);
+            const fs_rights_base = vm.pop(u64);
+            const oflags = vm.pop(u32);
+            const path_len = vm.pop(u32);
+            const path = vm.pop(u32);
+            const dirflags = vm.pop(u32);
+            const dirfd = vm.pop(i32);
+            vm.push(u64, @enumToInt(wasi_path_open(
+                vm,
                 dirfd,
                 dirflags,
                 path,
@@ -780,27 +780,27 @@ const Exec = struct {
         } else if (mem.eql(u8, imp.sym_name, "path_unlink_file")) {
             @panic("TODO implement path_unlink_file");
         } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
-            const timestamp = e.pop(u32);
-            const precision = e.pop(u64);
-            const clock_id = e.pop(u32);
-            e.push(u64, @enumToInt(wasi_clock_time_get(e, clock_id, precision, timestamp)));
+            const timestamp = vm.pop(u32);
+            const precision = vm.pop(u64);
+            const clock_id = vm.pop(u32);
+            vm.push(u64, @enumToInt(wasi_clock_time_get(vm, clock_id, precision, timestamp)));
         } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
             @panic("TODO implement fd_pread");
         } else if (mem.eql(u8, imp.sym_name, "debug")) {
-            const number = e.pop(u64);
-            const text = e.pop(u32);
-            wasi_debug(e, text, number);
+            const number = vm.pop(u64);
+            const text = vm.pop(u32);
+            wasi_debug(vm, text, number);
         } else if (mem.eql(u8, imp.sym_name, "debug_slice")) {
-            const len = e.pop(u32);
-            const ptr = e.pop(u32);
-            wasi_debug_slice(e, ptr, len);
+            const len = vm.pop(u32);
+            const ptr = vm.pop(u32);
+            wasi_debug_slice(vm, ptr, len);
         } else {
             std.debug.panic("unhandled import: {s}", .{imp.sym_name});
         }
     }
 
-    fn push(e: *Exec, comptime T: type, value: T) void {
-        e.stack[e.stack_top] = switch (T) {
+    fn push(vm: *VirtualMachine, comptime T: type, value: T) void {
+        vm.stack[vm.stack_top] = switch (T) {
             i32 => @bitCast(u32, value),
             i64 => @bitCast(u64, value),
             f32 => @bitCast(u32, value),
@@ -809,12 +809,12 @@ const Exec = struct {
             u64 => value,
             else => @compileError("bad push type"),
         };
-        e.stack_top += 1;
+        vm.stack_top += 1;
     }
 
-    fn pop(e: *Exec, comptime T: type) T {
-        e.stack_top -= 1;
-        const value = e.stack[e.stack_top];
+    fn pop(vm: *VirtualMachine, comptime T: type) T {
+        vm.stack_top -= 1;
+        const value = vm.stack[vm.stack_top];
         return switch (T) {
             i32 => @bitCast(i32, @truncate(u32, value)),
             i64 => @bitCast(i64, value),
@@ -826,16 +826,16 @@ const Exec = struct {
         };
     }
 
-    fn run(e: *Exec) noreturn {
-        const module_bytes = e.module_bytes;
+    fn run(vm: *VirtualMachine) noreturn {
+        const module_bytes = vm.module_bytes;
         while (true) {
-            const frame = &frames[e.frames_index];
+            const frame = &frames[vm.frames_index];
             const pc = &frame.pc;
             const op = @intToEnum(wasm.Opcode, module_bytes[pc.*]);
             pc.* += 1;
-            if (e.stack_top > 0) {
+            if (vm.stack_top > 0) {
                 cpu_log.debug("stack[{d}]={x} pc={d}, op={s}", .{
-                    e.stack_top - 1, e.stack[e.stack_top - 1], pc.*, @tagName(op),
+                    vm.stack_top - 1, vm.stack[vm.stack_top - 1], pc.*, @tagName(op),
                 });
             } else {
                 cpu_log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
@@ -848,7 +848,7 @@ const Exec = struct {
                     labels[frame.labels_end] = .{
                         .loop_pc = 0,
                         .block_type = block_type,
-                        .stack_top = e.stack_top,
+                        .stack_top = vm.stack_top,
                     };
                     frame.labels_end += 1;
                     //cpu_log.debug("set labels_end={d}", .{frame.labels_end});
@@ -858,7 +858,7 @@ const Exec = struct {
                     labels[frame.labels_end] = .{
                         .loop_pc = pc.*,
                         .block_type = block_type,
-                        .stack_top = e.stack_top,
+                        .stack_top = vm.stack_top,
                     };
                     frame.labels_end += 1;
                     //cpu_log.debug("set labels_end={d}", .{frame.labels_end});
@@ -866,34 +866,34 @@ const Exec = struct {
                 .@"if" => @panic("unhandled opcode: if"),
                 .@"else" => @panic("unhandled opcode: else"),
                 .end => {
-                    const prev_frame = &frames[e.frames_index - 1];
+                    const prev_frame = &frames[vm.frames_index - 1];
                     //cpu_log.debug("labels_end {d}-- (base: {d}) arity={d}", .{
                     //    frame.labels_end, prev_frame.labels_end, frame.return_arity,
                     //});
                     if (frame.labels_end == prev_frame.labels_end) {
                         const n = frame.return_arity;
-                        const dst = e.stack[frame.locals_begin..][0..n];
-                        const src = e.stack[e.stack_top - n ..][0..n];
+                        const dst = vm.stack[frame.locals_begin..][0..n];
+                        const src = vm.stack[vm.stack_top - n ..][0..n];
                         mem.copy(u64, dst, src);
-                        e.stack_top = frame.locals_begin + n;
-                        e.frames_index -= 1;
+                        vm.stack_top = frame.locals_begin + n;
+                        vm.frames_index -= 1;
                     } else {
                         frame.labels_end -= 1;
                     }
                 },
                 .br => {
                     const label_idx = readVarInt(module_bytes, pc, u32);
-                    e.br(label_idx + 1);
+                    vm.br(label_idx + 1);
                 },
                 .br_if => {
                     const label_idx = readVarInt(module_bytes, pc, u32);
-                    if (e.pop(u32) != 0) {
-                        e.br(label_idx + 1);
+                    if (vm.pop(u32) != 0) {
+                        vm.br(label_idx + 1);
                     }
                 },
                 .br_table => {
                     const labels_len = readVarInt(module_bytes, pc, u32) + 1;
-                    const chosen_i = @min(e.pop(u32), labels_len - 1);
+                    const chosen_i = @min(vm.pop(u32), labels_len - 1);
                     var i: u32 = 0;
                     var chosen_label_idx: u32 = undefined;
                     while (i < labels_len) : (i += 1) {
@@ -902,808 +902,808 @@ const Exec = struct {
                             chosen_label_idx = label_idx;
                         }
                     }
-                    e.br(chosen_label_idx + 1);
+                    vm.br(chosen_label_idx + 1);
                 },
                 .@"return" => {
                     const n = frame.return_arity;
-                    const dst = e.stack[frame.locals_begin..][0..n];
-                    const src = e.stack[e.stack_top - n ..][0..n];
+                    const dst = vm.stack[frame.locals_begin..][0..n];
+                    const src = vm.stack[vm.stack_top - n ..][0..n];
                     mem.copy(u64, dst, src);
-                    e.stack_top = frame.locals_begin + n;
-                    e.frames_index -= 1;
+                    vm.stack_top = frame.locals_begin + n;
+                    vm.frames_index -= 1;
                 },
                 .call => {
                     const fn_id = readVarInt(module_bytes, pc, u32);
-                    e.call(fn_id);
+                    vm.call(fn_id);
                 },
                 .call_indirect => {
                     const type_idx = readVarInt(module_bytes, pc, u32);
                     const table_idx = readVarInt(module_bytes, pc, u32);
                     cpu_log.debug("table_idx={d} type_idx={d}", .{ table_idx, type_idx });
                     assert(table_idx == 0);
-                    const operand = e.pop(u32);
-                    const fn_id = e.table[operand];
-                    e.call(fn_id);
+                    const operand = vm.pop(u32);
+                    const fn_id = vm.table[operand];
+                    vm.call(fn_id);
                 },
                 .drop => {
-                    e.stack_top -= 1;
+                    vm.stack_top -= 1;
                 },
                 .select => {
-                    const c = e.pop(u32);
-                    const b = e.pop(u64);
-                    const a = e.pop(u64);
+                    const c = vm.pop(u32);
+                    const b = vm.pop(u64);
+                    const a = vm.pop(u64);
                     const result = if (c != 0) a else b;
-                    e.push(u64, result);
+                    vm.push(u64, result);
                 },
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
                     //cpu_log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
-                    const val = e.stack[idx + frame.locals_begin];
-                    e.push(u64, val);
+                    const val = vm.stack[idx + frame.locals_begin];
+                    vm.push(u64, val);
                 },
                 .local_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
                     //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
-                    e.stack[idx + frame.locals_begin] = e.pop(u64);
+                    vm.stack[idx + frame.locals_begin] = vm.pop(u64);
                 },
                 .local_tee => {
                     const idx = readVarInt(module_bytes, pc, u32);
                     //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
-                    e.stack[idx + frame.locals_begin] = e.stack[e.stack_top - 1];
+                    vm.stack[idx + frame.locals_begin] = vm.stack[vm.stack_top - 1];
                 },
                 .global_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    e.push(u64, e.globals[idx]);
+                    vm.push(u64, vm.globals[idx]);
                 },
                 .global_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
-                    e.globals[idx] = e.pop(u64);
+                    vm.globals[idx] = vm.pop(u64);
                 },
                 .i32_load => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.push(u32, mem.readIntLittle(u32, e.memory[offset..][0..4]));
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    vm.push(u32, mem.readIntLittle(u32, vm.memory[offset..][0..4]));
                 },
                 .i64_load => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.push(u64, mem.readIntLittle(u64, e.memory[offset..][0..8]));
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    vm.push(u64, mem.readIntLittle(u64, vm.memory[offset..][0..8]));
                 },
                 .f32_load => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(u32, e.memory[offset..][0..4]);
-                    e.push(u32, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(u32, vm.memory[offset..][0..4]);
+                    vm.push(u32, int);
                 },
                 .f64_load => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(u64, e.memory[offset..][0..8]);
-                    e.push(u64, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(u64, vm.memory[offset..][0..8]);
+                    vm.push(u64, int);
                 },
                 .i32_load8_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.push(i32, @bitCast(i8, e.memory[offset]));
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    vm.push(i32, @bitCast(i8, vm.memory[offset]));
                 },
                 .i32_load8_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
                     const offset = readVarInt(module_bytes, pc, u32);
-                    const arg = e.pop(u32);
-                    e.push(u32, e.memory[offset + arg]);
+                    const arg = vm.pop(u32);
+                    vm.push(u32, vm.memory[offset + arg]);
                 },
                 .i32_load16_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(i16, e.memory[offset..][0..2]);
-                    e.push(i32, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(i16, vm.memory[offset..][0..2]);
+                    vm.push(i32, int);
                 },
                 .i32_load16_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(u16, e.memory[offset..][0..2]);
-                    e.push(u32, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(u16, vm.memory[offset..][0..2]);
+                    vm.push(u32, int);
                 },
                 .i64_load8_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.push(i64, @bitCast(i8, e.memory[offset]));
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    vm.push(i64, @bitCast(i8, vm.memory[offset]));
                 },
                 .i64_load8_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.push(u64, e.memory[offset]);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    vm.push(u64, vm.memory[offset]);
                 },
                 .i64_load16_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(i16, e.memory[offset..][0..2]);
-                    e.push(i64, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(i16, vm.memory[offset..][0..2]);
+                    vm.push(i64, int);
                 },
                 .i64_load16_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(u16, e.memory[offset..][0..2]);
-                    e.push(u64, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(u16, vm.memory[offset..][0..2]);
+                    vm.push(u64, int);
                 },
                 .i64_load32_s => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(i32, e.memory[offset..][0..4]);
-                    e.push(i64, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(i32, vm.memory[offset..][0..4]);
+                    vm.push(i64, int);
                 },
                 .i64_load32_u => {
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    const int = mem.readIntLittle(u32, e.memory[offset..][0..4]);
-                    e.push(u64, int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    const int = mem.readIntLittle(u32, vm.memory[offset..][0..4]);
+                    vm.push(u64, int);
                 },
                 .i32_store => {
-                    const operand = e.pop(u32);
+                    const operand = vm.pop(u32);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(u32, e.memory[offset..][0..4], operand);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    mem.writeIntLittle(u32, vm.memory[offset..][0..4], operand);
                 },
                 .i64_store => {
-                    const operand = e.pop(u64);
+                    const operand = vm.pop(u64);
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(u64, e.memory[offset..][0..8], operand);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    mem.writeIntLittle(u64, vm.memory[offset..][0..8], operand);
                 },
                 .f32_store => {
-                    const int = @bitCast(u32, e.pop(f32));
+                    const int = @bitCast(u32, vm.pop(f32));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(u32, e.memory[offset..][0..4], int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    mem.writeIntLittle(u32, vm.memory[offset..][0..4], int);
                 },
                 .f64_store => {
-                    const int = @bitCast(u64, e.pop(f64));
+                    const int = @bitCast(u64, vm.pop(f64));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(u64, e.memory[offset..][0..8], int);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    mem.writeIntLittle(u64, vm.memory[offset..][0..8], int);
                 },
                 .i32_store8 => {
-                    const small = @truncate(u8, e.pop(u32));
+                    const small = @truncate(u8, vm.pop(u32));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.memory[offset] = small;
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    vm.memory[offset] = small;
                 },
                 .i32_store16 => {
-                    const small = @truncate(u16, e.pop(u32));
+                    const small = @truncate(u16, vm.pop(u32));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(u16, e.memory[offset..][0..2], small);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    mem.writeIntLittle(u16, vm.memory[offset..][0..2], small);
                 },
                 .i64_store8 => {
-                    const operand = @truncate(u8, e.pop(u64));
+                    const operand = @truncate(u8, vm.pop(u64));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    e.memory[offset] = operand;
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    vm.memory[offset] = operand;
                 },
                 .i64_store16 => {
-                    const small = @truncate(u16, e.pop(u64));
+                    const small = @truncate(u16, vm.pop(u64));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(u16, e.memory[offset..][0..2], small);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    mem.writeIntLittle(u16, vm.memory[offset..][0..2], small);
                 },
                 .i64_store32 => {
-                    const small = @truncate(u32, e.pop(u64));
+                    const small = @truncate(u32, vm.pop(u64));
                     const alignment = readVarInt(module_bytes, pc, u32);
                     _ = alignment;
-                    const offset = readVarInt(module_bytes, pc, u32) + e.pop(u32);
-                    mem.writeIntLittle(u32, e.memory[offset..][0..4], small);
+                    const offset = readVarInt(module_bytes, pc, u32) + vm.pop(u32);
+                    mem.writeIntLittle(u32, vm.memory[offset..][0..4], small);
                 },
                 .memory_size => {
                     pc.* += 1; // skip 0x00 byte
-                    const page_count = @intCast(u32, e.memory.len / wasm.page_size);
-                    e.push(u32, page_count);
+                    const page_count = @intCast(u32, vm.memory.len / wasm.page_size);
+                    vm.push(u32, page_count);
                 },
                 .memory_grow => {
                     pc.* += 1; // skip 0x00 byte
                     const gpa = general_purpose_allocator.allocator();
-                    const page_count = e.pop(u32);
-                    const old_page_count = @intCast(u32, e.memory.len / wasm.page_size);
-                    const new_len = e.memory.len + page_count * wasm.page_size;
-                    e.memory = gpa.realloc(e.memory, new_len) catch @panic("out of memory");
-                    e.push(u32, old_page_count);
+                    const page_count = vm.pop(u32);
+                    const old_page_count = @intCast(u32, vm.memory.len / wasm.page_size);
+                    const new_len = vm.memory.len + page_count * wasm.page_size;
+                    vm.memory = gpa.realloc(vm.memory, new_len) catch @panic("out of memory");
+                    vm.push(u32, old_page_count);
                 },
                 .i32_const => {
                     const x = readVarInt(module_bytes, pc, i32);
-                    e.push(i32, x);
+                    vm.push(i32, x);
                 },
                 .i64_const => {
                     const x = readVarInt(module_bytes, pc, i64);
-                    e.push(i64, x);
+                    vm.push(i64, x);
                 },
                 .f32_const => {
                     const x = readFloat32(module_bytes, pc);
-                    e.push(f32, x);
+                    vm.push(f32, x);
                 },
                 .f64_const => {
                     const x = readFloat64(module_bytes, pc);
-                    e.push(f64, x);
+                    vm.push(f64, x);
                 },
                 .i32_eqz => {
-                    const lhs = e.pop(u32);
-                    e.push(u64, @boolToInt(lhs == 0));
+                    const lhs = vm.pop(u32);
+                    vm.push(u64, @boolToInt(lhs == 0));
                 },
                 .i32_eq => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u64, @boolToInt(lhs == rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u64, @boolToInt(lhs == rhs));
                 },
                 .i32_ne => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u64, @boolToInt(lhs != rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u64, @boolToInt(lhs != rhs));
                 },
                 .i32_lt_s => {
-                    const rhs = e.pop(i32);
-                    const lhs = e.pop(i32);
-                    e.push(u64, @boolToInt(lhs < rhs));
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u64, @boolToInt(lhs < rhs));
                 },
                 .i32_lt_u => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u64, @boolToInt(lhs < rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u64, @boolToInt(lhs < rhs));
                 },
                 .i32_gt_s => {
-                    const rhs = e.pop(i32);
-                    const lhs = e.pop(i32);
-                    e.push(u64, @boolToInt(lhs > rhs));
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u64, @boolToInt(lhs > rhs));
                 },
                 .i32_gt_u => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u64, @boolToInt(lhs > rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u64, @boolToInt(lhs > rhs));
                 },
                 .i32_le_s => {
-                    const rhs = e.pop(i32);
-                    const lhs = e.pop(i32);
-                    e.push(u64, @boolToInt(lhs <= rhs));
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u64, @boolToInt(lhs <= rhs));
                 },
                 .i32_le_u => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u64, @boolToInt(lhs <= rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u64, @boolToInt(lhs <= rhs));
                 },
                 .i32_ge_s => {
-                    const rhs = e.pop(i32);
-                    const lhs = e.pop(i32);
-                    e.push(u64, @boolToInt(lhs >= rhs));
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u64, @boolToInt(lhs >= rhs));
                 },
                 .i32_ge_u => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u64, @boolToInt(lhs >= rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u64, @boolToInt(lhs >= rhs));
                 },
                 .i64_eqz => {
-                    const lhs = e.pop(u64);
-                    e.push(u64, @boolToInt(lhs == 0));
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @boolToInt(lhs == 0));
                 },
                 .i64_eq => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @boolToInt(lhs == rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @boolToInt(lhs == rhs));
                 },
                 .i64_ne => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @boolToInt(lhs != rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @boolToInt(lhs != rhs));
                 },
                 .i64_lt_s => {
-                    const rhs = e.pop(i64);
-                    const lhs = e.pop(i64);
-                    e.push(u64, @boolToInt(lhs < rhs));
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u64, @boolToInt(lhs < rhs));
                 },
                 .i64_lt_u => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @boolToInt(lhs < rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @boolToInt(lhs < rhs));
                 },
                 .i64_gt_s => {
-                    const rhs = e.pop(i64);
-                    const lhs = e.pop(i64);
-                    e.push(u64, @boolToInt(lhs > rhs));
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u64, @boolToInt(lhs > rhs));
                 },
                 .i64_gt_u => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @boolToInt(lhs > rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @boolToInt(lhs > rhs));
                 },
                 .i64_le_s => {
-                    const rhs = e.pop(i64);
-                    const lhs = e.pop(i64);
-                    e.push(u64, @boolToInt(lhs <= rhs));
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u64, @boolToInt(lhs <= rhs));
                 },
                 .i64_le_u => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @boolToInt(lhs <= rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @boolToInt(lhs <= rhs));
                 },
                 .i64_ge_s => {
-                    const rhs = e.pop(i64);
-                    const lhs = e.pop(i64);
-                    e.push(u64, @boolToInt(lhs >= rhs));
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u64, @boolToInt(lhs >= rhs));
                 },
                 .i64_ge_u => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @boolToInt(lhs >= rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @boolToInt(lhs >= rhs));
                 },
                 .f32_eq => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(u64, @boolToInt(lhs == rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u64, @boolToInt(lhs == rhs));
                 },
                 .f32_ne => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(u64, @boolToInt(lhs != rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u64, @boolToInt(lhs != rhs));
                 },
                 .f32_lt => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(u64, @boolToInt(lhs < rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u64, @boolToInt(lhs < rhs));
                 },
                 .f32_gt => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(u64, @boolToInt(lhs > rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u64, @boolToInt(lhs > rhs));
                 },
                 .f32_le => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(u64, @boolToInt(lhs <= rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u64, @boolToInt(lhs <= rhs));
                 },
                 .f32_ge => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(u64, @boolToInt(lhs >= rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u64, @boolToInt(lhs >= rhs));
                 },
                 .f64_eq => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(u64, @boolToInt(lhs == rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u64, @boolToInt(lhs == rhs));
                 },
                 .f64_ne => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(u64, @boolToInt(lhs != rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u64, @boolToInt(lhs != rhs));
                 },
                 .f64_lt => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(u64, @boolToInt(lhs <= rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u64, @boolToInt(lhs <= rhs));
                 },
                 .f64_gt => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(u64, @boolToInt(lhs > rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u64, @boolToInt(lhs > rhs));
                 },
                 .f64_le => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(u64, @boolToInt(lhs <= rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u64, @boolToInt(lhs <= rhs));
                 },
                 .f64_ge => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(u64, @boolToInt(lhs >= rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u64, @boolToInt(lhs >= rhs));
                 },
 
                 .i32_clz => {
-                    const operand = e.pop(u32);
-                    e.push(u32, @clz(operand));
+                    const operand = vm.pop(u32);
+                    vm.push(u32, @clz(operand));
                 },
                 .i32_ctz => {
-                    const operand = e.pop(u32);
-                    e.push(u32, @ctz(operand));
+                    const operand = vm.pop(u32);
+                    vm.push(u32, @ctz(operand));
                 },
                 .i32_popcnt => {
-                    const operand = e.pop(u32);
-                    e.push(u32, @popCount(operand));
+                    const operand = vm.pop(u32);
+                    vm.push(u32, @popCount(operand));
                 },
                 .i32_add => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs +% rhs);
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs +% rhs);
                 },
                 .i32_sub => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs -% rhs);
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs -% rhs);
                 },
                 .i32_mul => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs *% rhs);
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs *% rhs);
                 },
                 .i32_div_s => {
-                    const rhs = e.pop(i32);
-                    const lhs = e.pop(i32);
-                    e.push(i32, @divTrunc(lhs, rhs));
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(i32, @divTrunc(lhs, rhs));
                 },
                 .i32_div_u => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, @divTrunc(lhs, rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @divTrunc(lhs, rhs));
                 },
                 .i32_rem_s => {
-                    const rhs = e.pop(i32);
-                    const lhs = e.pop(i32);
-                    e.push(i32, @rem(lhs, rhs));
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(i32, @rem(lhs, rhs));
                 },
                 .i32_rem_u => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, @rem(lhs, rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @rem(lhs, rhs));
                 },
                 .i32_and => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs & rhs);
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs & rhs);
                 },
                 .i32_or => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs | rhs);
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs | rhs);
                 },
                 .i32_xor => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs ^ rhs);
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs ^ rhs);
                 },
                 .i32_shl => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs << @truncate(u5, rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs << @truncate(u5, rhs));
                 },
                 .i32_shr_s => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(i32);
-                    e.push(i32, lhs >> @truncate(u5, rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(i32);
+                    vm.push(i32, lhs >> @truncate(u5, rhs));
                 },
                 .i32_shr_u => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, lhs >> @truncate(u5, rhs));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs >> @truncate(u5, rhs));
                 },
                 .i32_rotl => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, math.rotl(u32, lhs, rhs % 32));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, math.rotl(u32, lhs, rhs % 32));
                 },
                 .i32_rotr => {
-                    const rhs = e.pop(u32);
-                    const lhs = e.pop(u32);
-                    e.push(u32, math.rotr(u32, lhs, rhs % 32));
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, math.rotr(u32, lhs, rhs % 32));
                 },
 
                 .i64_clz => {
-                    const operand = e.pop(u64);
-                    e.push(u64, @clz(operand));
+                    const operand = vm.pop(u64);
+                    vm.push(u64, @clz(operand));
                 },
                 .i64_ctz => {
-                    const operand = e.pop(u64);
-                    e.push(u64, @ctz(operand));
+                    const operand = vm.pop(u64);
+                    vm.push(u64, @ctz(operand));
                 },
                 .i64_popcnt => {
-                    const operand = e.pop(u64);
-                    e.push(u64, @popCount(operand));
+                    const operand = vm.pop(u64);
+                    vm.push(u64, @popCount(operand));
                 },
                 .i64_add => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs +% rhs);
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs +% rhs);
                 },
                 .i64_sub => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs -% rhs);
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs -% rhs);
                 },
                 .i64_mul => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs *% rhs);
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs *% rhs);
                 },
                 .i64_div_s => {
-                    const rhs = e.pop(i64);
-                    const lhs = e.pop(i64);
-                    e.push(i64, @divTrunc(lhs, rhs));
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(i64, @divTrunc(lhs, rhs));
                 },
                 .i64_div_u => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @divTrunc(lhs, rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @divTrunc(lhs, rhs));
                 },
                 .i64_rem_s => {
-                    const rhs = e.pop(i64);
-                    const lhs = e.pop(i64);
-                    e.push(i64, @rem(lhs, rhs));
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(i64, @rem(lhs, rhs));
                 },
                 .i64_rem_u => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, @rem(lhs, rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @rem(lhs, rhs));
                 },
                 .i64_and => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs & rhs);
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs & rhs);
                 },
                 .i64_or => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs | rhs);
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs | rhs);
                 },
                 .i64_xor => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs ^ rhs);
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs ^ rhs);
                 },
                 .i64_shl => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs << @truncate(u6, rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs << @truncate(u6, rhs));
                 },
                 .i64_shr_s => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(i64);
-                    e.push(i64, lhs >> @truncate(u6, rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(i64);
+                    vm.push(i64, lhs >> @truncate(u6, rhs));
                 },
                 .i64_shr_u => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, lhs >> @truncate(u6, rhs));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs >> @truncate(u6, rhs));
                 },
                 .i64_rotl => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, math.rotl(u64, lhs, rhs % 64));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, math.rotl(u64, lhs, rhs % 64));
                 },
                 .i64_rotr => {
-                    const rhs = e.pop(u64);
-                    const lhs = e.pop(u64);
-                    e.push(u64, math.rotr(u64, lhs, rhs % 64));
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, math.rotr(u64, lhs, rhs % 64));
                 },
 
                 .f32_abs => {
-                    e.push(f32, @fabs(e.pop(f32)));
+                    vm.push(f32, @fabs(vm.pop(f32)));
                 },
                 .f32_neg => {
-                    e.push(f32, -e.pop(f32));
+                    vm.push(f32, -vm.pop(f32));
                 },
                 .f32_ceil => {
-                    e.push(f32, @ceil(e.pop(f32)));
+                    vm.push(f32, @ceil(vm.pop(f32)));
                 },
                 .f32_floor => {
-                    e.push(f32, @floor(e.pop(f32)));
+                    vm.push(f32, @floor(vm.pop(f32)));
                 },
                 .f32_trunc => {
-                    e.push(f32, @trunc(e.pop(f32)));
+                    vm.push(f32, @trunc(vm.pop(f32)));
                 },
                 .f32_nearest => {
-                    e.push(f32, @round(e.pop(f32)));
+                    vm.push(f32, @round(vm.pop(f32)));
                 },
                 .f32_sqrt => {
-                    e.push(f32, @sqrt(e.pop(f32)));
+                    vm.push(f32, @sqrt(vm.pop(f32)));
                 },
                 .f32_add => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(f32, lhs + rhs);
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs + rhs);
                 },
                 .f32_sub => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(f32, lhs - rhs);
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs - rhs);
                 },
                 .f32_mul => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(f32, lhs * rhs);
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs * rhs);
                 },
                 .f32_div => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(f32, lhs / rhs);
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs / rhs);
                 },
                 .f32_min => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(f32, @min(lhs, rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, @min(lhs, rhs));
                 },
                 .f32_max => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(f32, @max(lhs, rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, @max(lhs, rhs));
                 },
                 .f32_copysign => {
-                    const rhs = e.pop(f32);
-                    const lhs = e.pop(f32);
-                    e.push(f32, math.copysign(lhs, rhs));
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, math.copysign(lhs, rhs));
                 },
                 .f64_abs => {
-                    e.push(f64, @fabs(e.pop(f64)));
+                    vm.push(f64, @fabs(vm.pop(f64)));
                 },
                 .f64_neg => {
-                    e.push(f64, -e.pop(f64));
+                    vm.push(f64, -vm.pop(f64));
                 },
                 .f64_ceil => {
-                    e.push(f64, @ceil(e.pop(f64)));
+                    vm.push(f64, @ceil(vm.pop(f64)));
                 },
                 .f64_floor => {
-                    e.push(f64, @floor(e.pop(f64)));
+                    vm.push(f64, @floor(vm.pop(f64)));
                 },
                 .f64_trunc => {
-                    e.push(f64, @trunc(e.pop(f64)));
+                    vm.push(f64, @trunc(vm.pop(f64)));
                 },
                 .f64_nearest => {
-                    e.push(f64, @round(e.pop(f64)));
+                    vm.push(f64, @round(vm.pop(f64)));
                 },
                 .f64_sqrt => {
-                    e.push(f64, @sqrt(e.pop(f64)));
+                    vm.push(f64, @sqrt(vm.pop(f64)));
                 },
                 .f64_add => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(f64, lhs + rhs);
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs + rhs);
                 },
                 .f64_sub => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(f64, lhs - rhs);
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs - rhs);
                 },
                 .f64_mul => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(f64, lhs * rhs);
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs * rhs);
                 },
                 .f64_div => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(f64, lhs / rhs);
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs / rhs);
                 },
                 .f64_min => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(f64, @min(lhs, rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, @min(lhs, rhs));
                 },
                 .f64_max => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(f64, @max(lhs, rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, @max(lhs, rhs));
                 },
                 .f64_copysign => {
-                    const rhs = e.pop(f64);
-                    const lhs = e.pop(f64);
-                    e.push(f64, math.copysign(lhs, rhs));
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, math.copysign(lhs, rhs));
                 },
 
                 .i32_wrap_i64 => {
-                    const operand = e.pop(i64);
-                    e.push(i32, @truncate(i32, operand));
+                    const operand = vm.pop(i64);
+                    vm.push(i32, @truncate(i32, operand));
                 },
                 .i32_trunc_f32_s => {
-                    const operand = e.pop(f32);
-                    e.push(i32, @floatToInt(i32, @trunc(operand)));
+                    const operand = vm.pop(f32);
+                    vm.push(i32, @floatToInt(i32, @trunc(operand)));
                 },
                 .i32_trunc_f32_u => {
-                    const operand = e.pop(f32);
-                    e.push(u32, @floatToInt(u32, @trunc(operand)));
+                    const operand = vm.pop(f32);
+                    vm.push(u32, @floatToInt(u32, @trunc(operand)));
                 },
                 .i32_trunc_f64_s => {
-                    const operand = e.pop(f64);
-                    e.push(i32, @floatToInt(i32, @trunc(operand)));
+                    const operand = vm.pop(f64);
+                    vm.push(i32, @floatToInt(i32, @trunc(operand)));
                 },
                 .i32_trunc_f64_u => {
-                    const operand = e.pop(f64);
-                    e.push(u32, @floatToInt(u32, @trunc(operand)));
+                    const operand = vm.pop(f64);
+                    vm.push(u32, @floatToInt(u32, @trunc(operand)));
                 },
                 .i64_extend_i32_s => {
-                    const operand = e.pop(i64);
-                    e.push(i64, @truncate(i32, operand));
+                    const operand = vm.pop(i64);
+                    vm.push(i64, @truncate(i32, operand));
                 },
                 .i64_extend_i32_u => {
-                    const operand = e.pop(u64);
-                    e.push(u64, @truncate(u32, operand));
+                    const operand = vm.pop(u64);
+                    vm.push(u64, @truncate(u32, operand));
                 },
                 .i64_trunc_f32_s => {
-                    const operand = e.pop(f32);
-                    e.push(i64, @floatToInt(i64, @trunc(operand)));
+                    const operand = vm.pop(f32);
+                    vm.push(i64, @floatToInt(i64, @trunc(operand)));
                 },
                 .i64_trunc_f32_u => {
-                    const operand = e.pop(f32);
-                    e.push(u64, @floatToInt(u64, @trunc(operand)));
+                    const operand = vm.pop(f32);
+                    vm.push(u64, @floatToInt(u64, @trunc(operand)));
                 },
                 .i64_trunc_f64_s => {
-                    const operand = e.pop(f64);
-                    e.push(i64, @floatToInt(i64, @trunc(operand)));
+                    const operand = vm.pop(f64);
+                    vm.push(i64, @floatToInt(i64, @trunc(operand)));
                 },
                 .i64_trunc_f64_u => {
-                    const operand = e.pop(f64);
-                    e.push(u64, @floatToInt(u64, @trunc(operand)));
+                    const operand = vm.pop(f64);
+                    vm.push(u64, @floatToInt(u64, @trunc(operand)));
                 },
                 .f32_convert_i32_s => {
-                    e.push(f32, @intToFloat(f32, e.pop(i32)));
+                    vm.push(f32, @intToFloat(f32, vm.pop(i32)));
                 },
                 .f32_convert_i32_u => {
-                    e.push(f32, @intToFloat(f32, e.pop(u32)));
+                    vm.push(f32, @intToFloat(f32, vm.pop(u32)));
                 },
                 .f32_convert_i64_s => {
-                    e.push(f32, @intToFloat(f32, e.pop(i64)));
+                    vm.push(f32, @intToFloat(f32, vm.pop(i64)));
                 },
                 .f32_convert_i64_u => {
-                    e.push(f32, @intToFloat(f32, e.pop(u64)));
+                    vm.push(f32, @intToFloat(f32, vm.pop(u64)));
                 },
                 .f32_demote_f64 => {
-                    e.push(f32, @floatCast(f32, e.pop(f64)));
+                    vm.push(f32, @floatCast(f32, vm.pop(f64)));
                 },
                 .f64_convert_i32_s => {
-                    e.push(f64, @intToFloat(f64, e.pop(i32)));
+                    vm.push(f64, @intToFloat(f64, vm.pop(i32)));
                 },
                 .f64_convert_i32_u => {
-                    e.push(f64, @intToFloat(f64, e.pop(u32)));
+                    vm.push(f64, @intToFloat(f64, vm.pop(u32)));
                 },
                 .f64_convert_i64_s => {
-                    e.push(f64, @intToFloat(f64, e.pop(i64)));
+                    vm.push(f64, @intToFloat(f64, vm.pop(i64)));
                 },
                 .f64_convert_i64_u => {
-                    e.push(f64, @intToFloat(f64, e.pop(u64)));
+                    vm.push(f64, @intToFloat(f64, vm.pop(u64)));
                 },
                 .f64_promote_f32 => {
-                    e.push(f64, e.pop(f32));
+                    vm.push(f64, vm.pop(f32));
                 },
                 .i32_reinterpret_f32 => {
-                    e.push(u32, @bitCast(u32, e.pop(f32)));
+                    vm.push(u32, @bitCast(u32, vm.pop(f32)));
                 },
                 .i64_reinterpret_f64 => {
-                    e.push(u64, @bitCast(u64, e.pop(f64)));
+                    vm.push(u64, @bitCast(u64, vm.pop(f64)));
                 },
                 .f32_reinterpret_i32 => {
-                    e.push(f32, @bitCast(f32, e.pop(u32)));
+                    vm.push(f32, @bitCast(f32, vm.pop(u32)));
                 },
                 .f64_reinterpret_i64 => {
-                    e.push(f64, @bitCast(f64, e.pop(u64)));
+                    vm.push(f64, @bitCast(f64, vm.pop(u64)));
                 },
 
                 .i32_extend8_s => {
-                    e.push(i32, @truncate(i8, e.pop(i32)));
+                    vm.push(i32, @truncate(i8, vm.pop(i32)));
                 },
                 .i32_extend16_s => {
-                    e.push(i32, @truncate(i16, e.pop(i32)));
+                    vm.push(i32, @truncate(i16, vm.pop(i32)));
                 },
                 .i64_extend8_s => {
-                    e.push(i64, @truncate(i8, e.pop(i64)));
+                    vm.push(i64, @truncate(i8, vm.pop(i64)));
                 },
                 .i64_extend16_s => {
-                    e.push(i64, @truncate(i16, e.pop(i64)));
+                    vm.push(i64, @truncate(i16, vm.pop(i64)));
                 },
                 .i64_extend32_s => {
-                    e.push(i64, @truncate(i32, e.pop(i64)));
+                    vm.push(i64, @truncate(i32, vm.pop(i64)));
                 },
                 .prefixed => {
                     const prefixed_op = @intToEnum(wasm.PrefixedOpcode, module_bytes[pc.*]);
@@ -1721,21 +1721,21 @@ const Exec = struct {
                         .data_drop => unreachable,
                         .memory_copy => {
                             pc.* += 2;
-                            const n = e.pop(u32);
-                            const src = e.pop(u32);
-                            const dest = e.pop(u32);
-                            assert(dest + n <= e.memory.len);
-                            assert(src + n <= e.memory.len);
+                            const n = vm.pop(u32);
+                            const src = vm.pop(u32);
+                            const dest = vm.pop(u32);
+                            assert(dest + n <= vm.memory.len);
+                            assert(src + n <= vm.memory.len);
                             assert(src + n <= dest or dest + n <= src); // overlapping
-                            @memcpy(e.memory.ptr + dest, e.memory.ptr + src, n);
+                            @memcpy(vm.memory.ptr + dest, vm.memory.ptr + src, n);
                         },
                         .memory_fill => {
                             pc.* += 1;
-                            const n = e.pop(u32);
-                            const value = @truncate(u8, e.pop(u32));
-                            const dest = e.pop(u32);
-                            assert(dest + n <= e.memory.len);
-                            @memset(e.memory.ptr + dest, value, n);
+                            const n = vm.pop(u32);
+                            const value = @truncate(u8, vm.pop(u32));
+                            const dest = vm.pop(u32);
+                            assert(dest + n <= vm.memory.len);
+                            @memset(vm.memory.ptr + dest, value, n);
                         },
                         .table_init => unreachable,
                         .elem_drop => unreachable,
@@ -1807,36 +1807,36 @@ fn readFloat64(bytes: []const u8, i: *u32) f64 {
 }
 
 /// fn args_sizes_get(argc: *usize, argv_buf_size: *usize) errno_t;
-fn wasi_args_sizes_get(e: *Exec, argc: u32, argv_buf_size: u32) wasi.errno_t {
+fn wasi_args_sizes_get(vm: *VirtualMachine, argc: u32, argv_buf_size: u32) wasi.errno_t {
     trace_log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
-    mem.writeIntLittle(u32, e.memory[argc..][0..4], @intCast(u32, e.args.len));
+    mem.writeIntLittle(u32, vm.memory[argc..][0..4], @intCast(u32, vm.args.len));
     var buf_size: usize = 0;
-    for (e.args) |arg| {
+    for (vm.args) |arg| {
         buf_size += arg.len + 1;
     }
-    mem.writeIntLittle(u32, e.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
+    mem.writeIntLittle(u32, vm.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
     return .SUCCESS;
 }
 
 /// extern fn args_get(argv: [*][*:0]u8, argv_buf: [*]u8) errno_t;
-fn wasi_args_get(e: *Exec, argv: u32, argv_buf: u32) wasi.errno_t {
+fn wasi_args_get(vm: *VirtualMachine, argv: u32, argv_buf: u32) wasi.errno_t {
     trace_log.debug("wasi_args_get argv={d} argv_buf={d}", .{ argv, argv_buf });
     var argv_buf_i: usize = 0;
-    for (e.args) |arg, arg_i| {
+    for (vm.args) |arg, arg_i| {
         // Write the arg to the buffer.
         const argv_ptr = argv_buf + argv_buf_i;
-        mem.copy(u8, e.memory[argv_buf + argv_buf_i ..], arg);
-        e.memory[argv_buf + argv_buf_i + arg.len] = 0;
+        mem.copy(u8, vm.memory[argv_buf + argv_buf_i ..], arg);
+        vm.memory[argv_buf + argv_buf_i + arg.len] = 0;
         argv_buf_i += arg.len + 1;
 
-        mem.writeIntLittle(u32, e.memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
+        mem.writeIntLittle(u32, vm.memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
     }
     return .SUCCESS;
 }
 
 /// extern fn random_get(buf: [*]u8, buf_len: usize) errno_t;
-fn wasi_random_get(e: *Exec, buf: u32, buf_len: u32) wasi.errno_t {
-    const host_buf = e.memory[buf..][0..buf_len];
+fn wasi_random_get(vm: *VirtualMachine, buf: u32, buf_len: u32) wasi.errno_t {
+    const host_buf = vm.memory[buf..][0..buf_len];
     std.crypto.random.bytes(host_buf);
     trace_log.debug("random_get {x}", .{std.fmt.fmtSliceHexLower(host_buf)});
     return .SUCCESS;
@@ -1879,34 +1879,34 @@ fn toHostFd(wasi_fd: wasi.fd_t) os.fd_t {
 ///     pr_type: u8,
 ///     u: usize,
 /// };
-fn wasi_fd_prestat_get(e: *Exec, fd: wasi.fd_t, buf: u32) wasi.errno_t {
+fn wasi_fd_prestat_get(vm: *VirtualMachine, fd: wasi.fd_t, buf: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_prestat_get fd={d} buf={d}", .{ fd, buf });
     const preopen = findPreopen(fd) orelse return .BADF;
-    mem.writeIntLittle(u32, e.memory[buf + 0 ..][0..4], 0);
-    mem.writeIntLittle(u32, e.memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
+    mem.writeIntLittle(u32, vm.memory[buf + 0 ..][0..4], 0);
+    mem.writeIntLittle(u32, vm.memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
     return .SUCCESS;
 }
 
 /// fn fd_prestat_dir_name(fd: fd_t, path: [*]u8, path_len: usize) errno_t;
-fn wasi_fd_prestat_dir_name(e: *Exec, fd: wasi.fd_t, path: u32, path_len: u32) wasi.errno_t {
+fn wasi_fd_prestat_dir_name(vm: *VirtualMachine, fd: wasi.fd_t, path: u32, path_len: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_prestat_dir_name fd={d} path={d} path_len={d}", .{ fd, path, path_len });
     const preopen = findPreopen(fd) orelse return .BADF;
     assert(path_len == preopen.name.len);
-    mem.copy(u8, e.memory[path..], preopen.name);
+    mem.copy(u8, vm.memory[path..], preopen.name);
     return .SUCCESS;
 }
 
 /// extern fn fd_close(fd: fd_t) errno_t;
-fn wasi_fd_close(e: *Exec, fd: wasi.fd_t) wasi.errno_t {
+fn wasi_fd_close(vm: *VirtualMachine, fd: wasi.fd_t) wasi.errno_t {
     trace_log.debug("wasi_fd_close fd={d}", .{fd});
-    _ = e;
+    _ = vm;
     const host_fd = toHostFd(fd);
     os.close(host_fd);
     return .SUCCESS;
 }
 
 fn wasi_fd_read(
-    e: *Exec,
+    vm: *VirtualMachine,
     fd: wasi.fd_t,
     iovs: u32, // [*]const iovec_t
     iovs_len: u32, // usize
@@ -1919,15 +1919,15 @@ fn wasi_fd_read(
     var i: u32 = 0;
     var total_read: usize = 0;
     while (i < iovs_len) : (i += 1) {
-        const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
-        const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
-        const buf = e.memory[ptr..][0..len];
+        const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
+        const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
+        const buf = vm.memory[ptr..][0..len];
         const read = os.read(host_fd, buf) catch |err| return toWasiError(err);
         trace_log.debug("read {d} bytes out of {d}", .{ read, buf.len });
         total_read += read;
         if (read != buf.len) break;
     }
-    mem.writeIntLittle(u32, e.memory[nread..][0..4], @intCast(u32, total_read));
+    mem.writeIntLittle(u32, vm.memory[nread..][0..4], @intCast(u32, total_read));
     return .SUCCESS;
 }
 
@@ -1936,7 +1936,7 @@ fn wasi_fd_read(
 ///     base: [*]const u8,
 ///     len: usize,
 /// };
-fn wasi_fd_write(e: *Exec, fd: wasi.fd_t, iovs: u32, iovs_len: u32, nwritten: u32) wasi.errno_t {
+fn wasi_fd_write(vm: *VirtualMachine, fd: wasi.fd_t, iovs: u32, iovs_len: u32, nwritten: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_write fd={d} iovs={d} iovs_len={d} nwritten={d}", .{
         fd, iovs, iovs_len, nwritten,
     });
@@ -1944,19 +1944,19 @@ fn wasi_fd_write(e: *Exec, fd: wasi.fd_t, iovs: u32, iovs_len: u32, nwritten: u3
     var i: u32 = 0;
     var total_written: usize = 0;
     while (i < iovs_len) : (i += 1) {
-        const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
-        const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
-        const buf = e.memory[ptr..][0..len];
+        const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
+        const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
+        const buf = vm.memory[ptr..][0..len];
         const written = os.write(host_fd, buf) catch |err| return toWasiError(err);
         total_written += written;
         if (written != buf.len) break;
     }
-    mem.writeIntLittle(u32, e.memory[nwritten..][0..4], @intCast(u32, total_written));
+    mem.writeIntLittle(u32, vm.memory[nwritten..][0..4], @intCast(u32, total_written));
     return .SUCCESS;
 }
 
 fn wasi_fd_pwrite(
-    e: *Exec,
+    vm: *VirtualMachine,
     fd: wasi.fd_t,
     iovs: u32, // [*]const ciovec_t
     iovs_len: u32, // usize
@@ -1970,14 +1970,14 @@ fn wasi_fd_pwrite(
     var i: u32 = 0;
     var written: usize = 0;
     while (i < iovs_len) : (i += 1) {
-        const ptr = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 0 ..][0..4]);
-        const len = mem.readIntLittle(u32, e.memory[iovs + i * 8 + 4 ..][0..4]);
-        const buf = e.memory[ptr..][0..len];
+        const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
+        const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
+        const buf = vm.memory[ptr..][0..len];
         const w = os.pwrite(host_fd, buf, offset + written) catch |err| return toWasiError(err);
         written += w;
         if (w != buf.len) break;
     }
-    mem.writeIntLittle(u32, e.memory[written_ptr..][0..4], @intCast(u32, written));
+    mem.writeIntLittle(u32, vm.memory[written_ptr..][0..4], @intCast(u32, written));
     return .SUCCESS;
 }
 
@@ -1993,7 +1993,7 @@ fn wasi_fd_pwrite(
 ///    fd: *fd_t,
 ///) errno_t;
 fn wasi_path_open(
-    e: *Exec,
+    vm: *VirtualMachine,
     dirfd: wasi.fd_t,
     dirflags: wasi.lookupflags_t,
     path: u32,
@@ -2004,7 +2004,7 @@ fn wasi_path_open(
     fs_flags: wasi.fdflags_t,
     fd: u32,
 ) wasi.errno_t {
-    const sub_path = e.memory[path..][0..path_len];
+    const sub_path = vm.memory[path..][0..path_len];
     trace_log.debug("wasi_path_open dirfd={d} dirflags={d} path={s} oflags={d} fs_rights_base={d} fs_rights_inheriting={d} fs_flags={d} fd={d}", .{
         dirfd, dirflags, sub_path, oflags, fs_rights_base, fs_rights_inheriting, fs_flags, fd,
     });
@@ -2028,31 +2028,31 @@ fn wasi_path_open(
     }
     const mode = 0o644;
     const res_fd = os.openat(host_fd, sub_path, flags, mode) catch |err| return toWasiError(err);
-    mem.writeIntLittle(i32, e.memory[fd..][0..4], res_fd);
+    mem.writeIntLittle(i32, vm.memory[fd..][0..4], res_fd);
     return .SUCCESS;
 }
 
 fn wasi_path_filestat_get(
-    e: *Exec,
+    vm: *VirtualMachine,
     fd: wasi.fd_t,
     flags: wasi.lookupflags_t,
     path: u32, // [*]const u8
     path_len: u32, // usize
     buf: u32, // *filestat_t
 ) wasi.errno_t {
-    const sub_path = e.memory[path..][0..path_len];
+    const sub_path = vm.memory[path..][0..path_len];
     trace_log.debug("wasi_path_filestat_get fd={d} flags={d} path={s} buf={d}", .{
         fd, flags, sub_path, buf,
     });
     const host_fd = toHostFd(fd);
     const dir: fs.Dir = .{ .fd = host_fd };
     const stat = dir.statFile(sub_path) catch |err| return toWasiError(err);
-    return finishWasiStat(e, buf, stat);
+    return finishWasiStat(vm, buf, stat);
 }
 
 /// extern fn path_create_directory(fd: fd_t, path: [*]const u8, path_len: usize) errno_t;
-fn wasi_path_create_directory(e: *Exec, fd: wasi.fd_t, path: u32, path_len: u32) wasi.errno_t {
-    const sub_path = e.memory[path..][0..path_len];
+fn wasi_path_create_directory(vm: *VirtualMachine, fd: wasi.fd_t, path: u32, path_len: u32) wasi.errno_t {
+    const sub_path = vm.memory[path..][0..path_len];
     trace_log.debug("wasi_path_create_directory fd={d} path={s}", .{ fd, sub_path });
     const host_fd = toHostFd(fd);
     const dir: fs.Dir = .{ .fd = host_fd };
@@ -2061,7 +2061,7 @@ fn wasi_path_create_directory(e: *Exec, fd: wasi.fd_t, path: u32, path_len: u32)
 }
 
 fn wasi_path_rename(
-    e: *Exec,
+    vm: *VirtualMachine,
     old_fd: wasi.fd_t,
     old_path_ptr: u32, // [*]const u8
     old_path_len: u32, // usize
@@ -2069,8 +2069,8 @@ fn wasi_path_rename(
     new_path_ptr: u32, // [*]const u8
     new_path_len: u32, // usize
 ) wasi.errno_t {
-    const old_path = e.memory[old_path_ptr..][0..old_path_len];
-    const new_path = e.memory[new_path_ptr..][0..new_path_len];
+    const old_path = vm.memory[old_path_ptr..][0..old_path_len];
+    const new_path = vm.memory[new_path_ptr..][0..new_path_len];
     trace_log.debug("wasi_path_rename old_fd={d} old_path={s} new_fd={d} new_path={s}", .{
         old_fd, old_path, new_fd, new_path,
     });
@@ -2081,16 +2081,16 @@ fn wasi_path_rename(
 }
 
 /// extern fn fd_filestat_get(fd: fd_t, buf: *filestat_t) errno_t;
-fn wasi_fd_filestat_get(e: *Exec, fd: wasi.fd_t, buf: u32) wasi.errno_t {
+fn wasi_fd_filestat_get(vm: *VirtualMachine, fd: wasi.fd_t, buf: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_filestat_get fd={d} buf={d}", .{ fd, buf });
     const host_fd = toHostFd(fd);
     const file = fs.File{ .handle = host_fd };
     const stat = file.stat() catch |err| return toWasiError(err);
-    return finishWasiStat(e, buf, stat);
+    return finishWasiStat(vm, buf, stat);
 }
 
-fn wasi_fd_filestat_set_size(e: *Exec, fd: wasi.fd_t, size: wasi.filesize_t) wasi.errno_t {
-    _ = e;
+fn wasi_fd_filestat_set_size(vm: *VirtualMachine, fd: wasi.fd_t, size: wasi.filesize_t) wasi.errno_t {
+    _ = vm;
     trace_log.debug("wasi_fd_filestat_set_size fd={d} size={d}", .{ fd, size });
     const host_fd = toHostFd(fd);
     os.ftruncate(host_fd, size) catch |err| return toWasiError(err);
@@ -2104,37 +2104,37 @@ fn wasi_fd_filestat_set_size(e: *Exec, fd: wasi.fd_t, size: wasi.filesize_t) was
 ///     fs_rights_base: rights_t, u64
 ///     fs_rights_inheriting: rights_t, u64
 /// };
-fn wasi_fd_fdstat_get(e: *Exec, fd: wasi.fd_t, buf: u32) wasi.errno_t {
+fn wasi_fd_fdstat_get(vm: *VirtualMachine, fd: wasi.fd_t, buf: u32) wasi.errno_t {
     trace_log.debug("wasi_fd_fdstat_get fd={d} buf={d}", .{ fd, buf });
     const host_fd = toHostFd(fd);
     const file = fs.File{ .handle = host_fd };
     const stat = file.stat() catch |err| return toWasiError(err);
-    mem.writeIntLittle(u16, e.memory[buf + 0x00 ..][0..2], @enumToInt(toWasiFileType(stat.kind)));
-    mem.writeIntLittle(u16, e.memory[buf + 0x02 ..][0..2], 0); // flags
-    mem.writeIntLittle(u64, e.memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
-    mem.writeIntLittle(u64, e.memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
+    mem.writeIntLittle(u16, vm.memory[buf + 0x00 ..][0..2], @enumToInt(toWasiFileType(stat.kind)));
+    mem.writeIntLittle(u16, vm.memory[buf + 0x02 ..][0..2], 0); // flags
+    mem.writeIntLittle(u64, vm.memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
+    mem.writeIntLittle(u64, vm.memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
     return .SUCCESS;
 }
 
 /// extern fn clock_time_get(clock_id: clockid_t, precision: timestamp_t, timestamp: *timestamp_t) errno_t;
-fn wasi_clock_time_get(e: *Exec, clock_id: wasi.clockid_t, precision: wasi.timestamp_t, timestamp: u32) wasi.errno_t {
+fn wasi_clock_time_get(vm: *VirtualMachine, clock_id: wasi.clockid_t, precision: wasi.timestamp_t, timestamp: u32) wasi.errno_t {
     //const host_clock_id = toHostClockId(clock_id);
     _ = precision;
     _ = clock_id;
     const wasi_ts = toWasiTimestamp(std.time.nanoTimestamp());
-    mem.writeIntLittle(u64, e.memory[timestamp..][0..8], wasi_ts);
+    mem.writeIntLittle(u64, vm.memory[timestamp..][0..8], wasi_ts);
     return .SUCCESS;
 }
 
 ///pub extern "wasi_snapshot_preview1" fn debug(string: [*:0]const u8, x: u64) void;
-fn wasi_debug(e: *Exec, text: u32, n: u64) void {
-    const s = mem.sliceTo(e.memory[text..], 0);
+fn wasi_debug(vm: *VirtualMachine, text: u32, n: u64) void {
+    const s = mem.sliceTo(vm.memory[text..], 0);
     trace_log.debug("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
 }
 
 /// pub extern "wasi_snapshot_preview1" fn debug_slice(ptr: [*]const u8, len: usize) void;
-fn wasi_debug_slice(e: *Exec, ptr: u32, len: u32) void {
-    const s = e.memory[ptr..][0..len];
+fn wasi_debug_slice(vm: *VirtualMachine, ptr: u32, len: u32) void {
+    const s = vm.memory[ptr..][0..len];
     trace_log.debug("wasi_debug_slice: '{s}'", .{s});
 }
 
@@ -2187,14 +2187,14 @@ fn toWasiFileType(kind: fs.File.Kind) wasi.filetype_t {
 ///     mtim: timestamp_t, u64
 ///     ctim: timestamp_t, u64
 /// };
-fn finishWasiStat(e: *Exec, buf: u32, stat: fs.File.Stat) wasi.errno_t {
-    mem.writeIntLittle(u64, e.memory[buf + 0x00 ..][0..8], 0); // device
-    mem.writeIntLittle(u64, e.memory[buf + 0x08 ..][0..8], stat.inode);
-    mem.writeIntLittle(u64, e.memory[buf + 0x10 ..][0..8], @enumToInt(toWasiFileType(stat.kind)));
-    mem.writeIntLittle(u64, e.memory[buf + 0x18 ..][0..8], 1); // nlink
-    mem.writeIntLittle(u64, e.memory[buf + 0x20 ..][0..8], stat.size);
-    mem.writeIntLittle(u64, e.memory[buf + 0x28 ..][0..8], toWasiTimestamp(stat.atime));
-    mem.writeIntLittle(u64, e.memory[buf + 0x30 ..][0..8], toWasiTimestamp(stat.mtime));
-    mem.writeIntLittle(u64, e.memory[buf + 0x38 ..][0..8], toWasiTimestamp(stat.ctime));
+fn finishWasiStat(vm: *VirtualMachine, buf: u32, stat: fs.File.Stat) wasi.errno_t {
+    mem.writeIntLittle(u64, vm.memory[buf + 0x00 ..][0..8], 0); // device
+    mem.writeIntLittle(u64, vm.memory[buf + 0x08 ..][0..8], stat.inode);
+    mem.writeIntLittle(u64, vm.memory[buf + 0x10 ..][0..8], @enumToInt(toWasiFileType(stat.kind)));
+    mem.writeIntLittle(u64, vm.memory[buf + 0x18 ..][0..8], 1); // nlink
+    mem.writeIntLittle(u64, vm.memory[buf + 0x20 ..][0..8], stat.size);
+    mem.writeIntLittle(u64, vm.memory[buf + 0x28 ..][0..8], toWasiTimestamp(stat.atime));
+    mem.writeIntLittle(u64, vm.memory[buf + 0x30 ..][0..8], toWasiTimestamp(stat.mtime));
+    mem.writeIntLittle(u64, vm.memory[buf + 0x38 ..][0..8], toWasiTimestamp(stat.ctime));
     return .SUCCESS;
 }
