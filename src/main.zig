@@ -39,8 +39,8 @@ pub fn main() !void {
     const wasm_file = args[2];
     const vm_args = args[2..];
 
-    const ten_moogieboogies = 10 * 1024 * 1024;
-    const module_bytes = try fs.cwd().readFileAlloc(arena, wasm_file, ten_moogieboogies);
+    const max_size = 50 * 1024 * 1024;
+    const module_bytes = try fs.cwd().readFileAlloc(arena, wasm_file, max_size);
 
     const cwd = try fs.cwd().openDir(".", .{});
     const cache_dir = try cwd.makeOpenPath("zig1-cache", .{});
@@ -50,9 +50,8 @@ pub fn main() !void {
     addPreopen(1, "stdout", os.STDOUT_FILENO);
     addPreopen(2, "stderr", os.STDERR_FILENO);
     addPreopen(3, ".", cwd.fd);
-    addPreopen(4, "/cwd", cwd.fd);
-    addPreopen(5, "/cache", cache_dir.fd);
-    addPreopen(6, "/lib", zig_lib_dir.fd);
+    addPreopen(4, "/cache", cache_dir.fd);
+    addPreopen(5, "/lib", zig_lib_dir.fd);
 
     var i: u32 = 0;
 
@@ -204,6 +203,7 @@ pub fn main() !void {
     const table = t: {
         i = section_starts[@enumToInt(wasm.Section.table)];
         const table_count = readVarInt(module_bytes, &i, u32);
+        if (table_count == 0) break :t &[0]u32{};
         if (table_count != 1) return error.ExpectedOneTableSection;
         const element_type = readVarInt(module_bytes, &i, u32);
         const has_max = readVarInt(module_bytes, &i, u32);
@@ -250,6 +250,7 @@ pub fn main() !void {
     };
 
     var exec: Exec = .{
+        .stack = try arena.alloc(u64, 10000000),
         .module_bytes = module_bytes,
         .stack_top = 0,
         .frames_index = 1,
@@ -266,7 +267,6 @@ pub fn main() !void {
 }
 
 const section_count = @typeInfo(wasm.Section).Enum.fields.len;
-var stack: [1000000]u64 = undefined;
 var frames: [100000]Frame = undefined;
 var labels: [100000]Label = undefined;
 
@@ -304,6 +304,7 @@ const Import = struct {
 };
 
 const Exec = struct {
+    stack: []u64,
     /// Points to one after the last stack item.
     stack_top: u32,
     frames_index: u32,
@@ -332,7 +333,7 @@ const Exec = struct {
             e.stack_top = label.stack_top;
         } else {
             // one result value
-            stack[label.stack_top] = stack[e.stack_top - 1];
+            e.stack[label.stack_top] = e.stack[e.stack_top - 1];
             e.stack_top = label.stack_top + 1;
         }
 
@@ -514,7 +515,7 @@ const Exec = struct {
                 .global_get,
                 .global_set,
                 => {
-                    _ = readVarInt(module_bytes, pc, u32);
+                    skipVarIntUnsigned(module_bytes, pc);
                     continue;
                 },
 
@@ -543,8 +544,7 @@ const Exec = struct {
                 .i64_store32,
                 .call_indirect,
                 => {
-                    _ = readVarInt(module_bytes, pc, u32);
-                    _ = readVarInt(module_bytes, pc, u32);
+                    skipVarIntUnsigned2(module_bytes, pc);
                     continue;
                 },
 
@@ -642,7 +642,7 @@ const Exec = struct {
         });
 
         // Push zeroed locals to stack
-        mem.set(u64, stack[e.stack_top..][0..locals_count], 0);
+        mem.set(u64, e.stack[e.stack_top..][0..locals_count], 0);
         e.stack_top += locals_count;
 
         const prev_labels_end = frames[e.frames_index].labels_end;
@@ -800,7 +800,7 @@ const Exec = struct {
     }
 
     fn push(e: *Exec, comptime T: type, value: T) void {
-        stack[e.stack_top] = switch (T) {
+        e.stack[e.stack_top] = switch (T) {
             i32 => @bitCast(u32, value),
             i64 => @bitCast(u64, value),
             f32 => @bitCast(u32, value),
@@ -814,7 +814,7 @@ const Exec = struct {
 
     fn pop(e: *Exec, comptime T: type) T {
         e.stack_top -= 1;
-        const value = stack[e.stack_top];
+        const value = e.stack[e.stack_top];
         return switch (T) {
             i32 => @bitCast(i32, @truncate(u32, value)),
             i64 => @bitCast(i64, value),
@@ -835,7 +835,7 @@ const Exec = struct {
             pc.* += 1;
             if (e.stack_top > 0) {
                 cpu_log.debug("stack[{d}]={x} pc={d}, op={s}", .{
-                    e.stack_top - 1, stack[e.stack_top - 1], pc.*, @tagName(op),
+                    e.stack_top - 1, e.stack[e.stack_top - 1], pc.*, @tagName(op),
                 });
             } else {
                 cpu_log.debug("<empty> pc={d}, op={s}", .{ pc.*, @tagName(op) });
@@ -872,8 +872,8 @@ const Exec = struct {
                     //});
                     if (frame.labels_end == prev_frame.labels_end) {
                         const n = frame.return_arity;
-                        const dst = stack[frame.locals_begin..][0..n];
-                        const src = stack[e.stack_top - n ..][0..n];
+                        const dst = e.stack[frame.locals_begin..][0..n];
+                        const src = e.stack[e.stack_top - n ..][0..n];
                         mem.copy(u64, dst, src);
                         e.stack_top = frame.locals_begin + n;
                         e.frames_index -= 1;
@@ -906,8 +906,8 @@ const Exec = struct {
                 },
                 .@"return" => {
                     const n = frame.return_arity;
-                    const dst = stack[frame.locals_begin..][0..n];
-                    const src = stack[e.stack_top - n ..][0..n];
+                    const dst = e.stack[frame.locals_begin..][0..n];
+                    const src = e.stack[e.stack_top - n ..][0..n];
                     mem.copy(u64, dst, src);
                     e.stack_top = frame.locals_begin + n;
                     e.frames_index -= 1;
@@ -938,18 +938,18 @@ const Exec = struct {
                 .local_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
                     //cpu_log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
-                    const val = stack[idx + frame.locals_begin];
+                    const val = e.stack[idx + frame.locals_begin];
                     e.push(u64, val);
                 },
                 .local_set => {
                     const idx = readVarInt(module_bytes, pc, u32);
                     //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
-                    stack[idx + frame.locals_begin] = e.pop(u64);
+                    e.stack[idx + frame.locals_begin] = e.pop(u64);
                 },
                 .local_tee => {
                     const idx = readVarInt(module_bytes, pc, u32);
                     //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
-                    stack[idx + frame.locals_begin] = stack[e.stack_top - 1];
+                    e.stack[idx + frame.locals_begin] = e.stack[e.stack_top - 1];
                 },
                 .global_get => {
                     const idx = readVarInt(module_bytes, pc, u32);
@@ -1774,6 +1774,17 @@ fn readVarInt(bytes: []const u8, i: *u32, comptime T: type) T {
     const result = readFn(T, fbs.reader()) catch unreachable;
     i.* = @intCast(u32, fbs.pos);
     return result;
+}
+
+fn skipVarIntUnsigned(bytes: []const u8, i: *u32) void {
+    const index = i.*;
+    i.* = index + ((@ctz(~mem.readIntLittle(u128, bytes[index..][0..16]) & 0x8080808080808080_8080808080808080) + 1) >> 3);
+}
+
+fn skipVarIntUnsigned2(bytes: []const u8, i: *u32) void {
+    const index = i.*;
+    const mask = ~mem.readIntLittle(u128, bytes[index..][0..16]) & 0x8080808080808080_8080808080808080;
+    i.* = index + ((@ctz(mask & (mask - 1)) + 1) >> 3);
 }
 
 fn readName(bytes: []const u8, i: *u32) []const u8 {
