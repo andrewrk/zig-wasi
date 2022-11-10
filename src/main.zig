@@ -11,8 +11,6 @@ const trace_log = std.log.scoped(.trace);
 const cpu_log = std.log.scoped(.cpu);
 const func_log = std.log.scoped(.func);
 
-var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-
 pub fn log(
     comptime level: std.log.Level,
     comptime scope: @TypeOf(.EnumLiteral),
@@ -26,12 +24,21 @@ pub fn log(
     _ = level;
 }
 
-pub fn main() !void {
-    const gpa = general_purpose_allocator.allocator();
+const max_memory = 3 * 1024 * 1024 * 1024; // 3 GiB
 
-    var arena_instance = std.heap.ArenaAllocator.init(gpa);
+pub fn main() !void {
+    var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
+
+    const memory = try os.mmap(
+        null,
+        max_memory,
+        os.PROT.READ | os.PROT.WRITE,
+        os.MAP.PRIVATE | os.MAP.ANONYMOUS,
+        -1,
+        0,
+    );
 
     const args = try process.argsAlloc(arena);
 
@@ -170,15 +177,13 @@ pub fn main() !void {
     };
 
     // Allocate and initialize memory.
-    const memory = m: {
+    const memory_len = m: {
         i = section_starts[@enumToInt(wasm.Section.memory)];
         const memories_len = readVarInt(module_bytes, &i, u32);
         if (memories_len != 1) return error.UnexpectedMemoryCount;
         const flags = readVarInt(module_bytes, &i, u32);
         _ = flags;
         const initial = readVarInt(module_bytes, &i, u32) * wasm.page_size;
-        const memory = try gpa.alloc(u8, initial);
-        @memset(memory.ptr, 0, memory.len);
 
         i = section_starts[@enumToInt(wasm.Section.data)];
         var datas_count = readVarInt(module_bytes, &i, u32);
@@ -197,7 +202,7 @@ pub fn main() !void {
             i += bytes_len;
         }
 
-        break :m memory;
+        break :m initial;
     };
 
     const table = t: {
@@ -258,6 +263,7 @@ pub fn main() !void {
         .types = types,
         .globals = globals,
         .memory = memory,
+        .memory_len = memory_len,
         .imports = imports,
         .args = vm_args,
         .table = table,
@@ -308,6 +314,7 @@ const VirtualMachine = struct {
     /// Points to one after the last stack item.
     stack_top: u32,
     frames_index: u32,
+    memory_len: u32,
     module_bytes: []const u8,
     functions: []const Function,
     /// Type index to start of type in module_bytes.
@@ -1117,16 +1124,16 @@ const VirtualMachine = struct {
                 },
                 .memory_size => {
                     pc.* += 1; // skip 0x00 byte
-                    const page_count = @intCast(u32, vm.memory.len / wasm.page_size);
+                    const page_count = @intCast(u32, vm.memory_len / wasm.page_size);
                     vm.push(u32, page_count);
                 },
                 .memory_grow => {
                     pc.* += 1; // skip 0x00 byte
-                    const gpa = general_purpose_allocator.allocator();
                     const page_count = vm.pop(u32);
-                    const old_page_count = @intCast(u32, vm.memory.len / wasm.page_size);
-                    const new_len = vm.memory.len + page_count * wasm.page_size;
-                    vm.memory = gpa.realloc(vm.memory, new_len) catch @panic("out of memory");
+                    const old_page_count = @intCast(u32, vm.memory_len / wasm.page_size);
+                    const new_len = vm.memory_len + page_count * wasm.page_size;
+                    if (new_len > vm.memory.len) @panic("out of memory");
+                    vm.memory_len = new_len;
                     vm.push(u32, old_page_count);
                 },
                 .i32_const => {
@@ -1724,8 +1731,8 @@ const VirtualMachine = struct {
                             const n = vm.pop(u32);
                             const src = vm.pop(u32);
                             const dest = vm.pop(u32);
-                            assert(dest + n <= vm.memory.len);
-                            assert(src + n <= vm.memory.len);
+                            assert(dest + n <= vm.memory_len);
+                            assert(src + n <= vm.memory_len);
                             assert(src + n <= dest or dest + n <= src); // overlapping
                             @memcpy(vm.memory.ptr + dest, vm.memory.ptr + src, n);
                         },
@@ -1734,7 +1741,7 @@ const VirtualMachine = struct {
                             const n = vm.pop(u32);
                             const value = @truncate(u8, vm.pop(u32));
                             const dest = vm.pop(u32);
-                            assert(dest + n <= vm.memory.len);
+                            assert(dest + n <= vm.memory_len);
                             @memset(vm.memory.ptr + dest, value, n);
                         },
                         .table_init => unreachable,
