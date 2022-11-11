@@ -1927,11 +1927,6 @@ const VirtualMachine = struct {
     }
 };
 
-const SectionPos = struct {
-    index: usize,
-    len: usize,
-};
-
 fn readVarInt(bytes: []const u8, i: *u32, comptime T: type) T {
     switch (@typeInfo(T)) {
         .Enum => |info| {
@@ -1949,18 +1944,6 @@ fn readVarInt(bytes: []const u8, i: *u32, comptime T: type) T {
     const result = readFn(T, fbs.reader()) catch unreachable;
     i.* = @intCast(u32, fbs.pos);
     return result;
-}
-
-fn skipVarIntUnsigned(bytes: []const u8, i: *u32) void {
-    const index = i.*;
-    const mask = ~mem.readIntLittle(u128, bytes[index..][0..16]) & 0x8080808080808080_8080808080808080;
-    i.* = index + ((@ctz(mask) + 1) >> 3);
-}
-
-fn skipVarIntUnsigned2(bytes: []const u8, i: *u32) void {
-    const index = i.*;
-    const mask = ~mem.readIntLittle(u128, bytes[index..][0..16]) & 0x8080808080808080_8080808080808080;
-    i.* = index + ((@ctz(mask & (mask - 1)) + 1) >> 3);
 }
 
 fn readName(bytes: []const u8, i: *u32) []const u8 {
