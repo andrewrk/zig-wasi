@@ -1298,9 +1298,12 @@ const VirtualMachine = struct {
                     const page_count = vm.pop(u32);
                     const old_page_count = @intCast(u32, vm.memory_len / wasm.page_size);
                     const new_len = vm.memory_len + page_count * wasm.page_size;
-                    if (new_len > vm.memory.len) @panic("out of memory");
-                    vm.memory_len = new_len;
-                    vm.push(u32, old_page_count);
+                    if (new_len > vm.memory.len) {
+                        vm.push(i32, -1);
+                    } else {
+                        vm.memory_len = new_len;
+                        vm.push(u32, old_page_count);
+                    }
                 },
                 .i32_const => {
                     const x = operands[operand_pc.*];
