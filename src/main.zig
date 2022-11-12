@@ -8,6 +8,7 @@ const wasi = std.os.wasi;
 const os = std.os;
 const math = std.math;
 const decode_log = std.log.scoped(.decode);
+const stats_log = std.log.scoped(.stats);
 const trace_log = std.log.scoped(.trace);
 const cpu_log = std.log.scoped(.cpu);
 const func_log = std.log.scoped(.func);
@@ -19,6 +20,7 @@ pub fn log(
     args: anytype,
 ) void {
     if (scope == .decode) return;
+    if (scope == .stats) return;
     if (scope == .cpu) return;
     if (scope == .trace) return;
     if (scope == .func) return;
@@ -234,8 +236,7 @@ pub fn main() !void {
 
     frames[0] = .{
         .fn_idx = 0,
-        .opcode_pc = undefined,
-        .operand_pc = undefined,
+        .pc = undefined,
         .stack_begin = undefined,
         .locals_begin = undefined,
         .return_arity = 0,
@@ -244,8 +245,8 @@ pub fn main() !void {
     var vm: VirtualMachine = .{
         .stack = try arena.alloc(u64, 10000000),
         .module_bytes = module_bytes,
-        .opcodes = try arena.alloc(u8, 5000000),
-        .operands = try arena.alloc(u32, 5000000),
+        .opcodes = try arena.alloc(u8, 1000000),
+        .operands = try arena.alloc(u32, 1000000),
         .stack_top = 0,
         .frames_index = 1,
         .functions = functions,
@@ -262,8 +263,7 @@ pub fn main() !void {
         var code_i: u32 = section_starts[@enumToInt(wasm.Section.code)];
         const codes_len = readVarInt(module_bytes, &code_i, u32);
         assert(codes_len == functions.len);
-        var opcode_pc: u32 = 0;
-        var operand_pc: u32 = 0;
+        var pc = ProgramCounter{ .opcode = 0, .operand = 0 };
         for (functions) |*func| {
             const size = readVarInt(module_bytes, &code_i, u32);
             const code_begin = code_i;
@@ -277,26 +277,59 @@ pub fn main() !void {
                 func.locals_count += current_count;
             }
 
-            func.opcode_pc = opcode_pc;
-            func.operand_pc = operand_pc;
-            vm.decodeCode(func, &code_i, &opcode_pc, &operand_pc);
+            func.pc = pc;
+            vm.decodeCode(func, &code_i, &pc);
             assert(code_i == code_begin + size);
         }
+
+        var opcode_counts = [1]u64{0} ** 0x100;
+        var prefixed_opcode_counts = [1]u64{0} ** 0x100;
+        var is_prefixed = false;
+        for (vm.opcodes[0..pc.opcode]) |opcode| {
+            if (!is_prefixed) {
+                opcode_counts[opcode] += 1;
+                is_prefixed = @intToEnum(wasm.Opcode, opcode) == .prefixed;
+            } else {
+                prefixed_opcode_counts[opcode] += 1;
+                is_prefixed = false;
+            }
+        }
+
+        stats_log.debug("{} opcodes", .{pc.opcode});
+        stats_log.debug("{} operands", .{pc.operand});
+        for (opcode_counts) |opcode_count, opcode| {
+            if (opcode_count == 0) continue;
+            stats_log.debug("{} {s}", .{ opcode_count, @tagName(@intToEnum(wasm.Opcode, opcode)) });
+        }
+        for (prefixed_opcode_counts) |prefixed_opcode_count, prefixed_opcode| {
+            if (prefixed_opcode_count == 0) continue;
+            stats_log.debug("{} {s}", .{
+                prefixed_opcode_count,
+                @tagName(@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)),
+            });
+        }
+        stats_log.debug("{} zero offsets", .{offset_counts[0]});
+        stats_log.debug("{} non-zero offsets", .{offset_counts[1]});
+        stats_log.debug("{} max offset", .{max_offset});
     }
 
     vm.call(start_fn_idx);
     vm.run();
 }
 
+var offset_counts = [2]u64{ 0, 0 };
+var max_offset: u64 = 0;
+
 const section_count = @typeInfo(wasm.Section).Enum.fields.len;
 var frames: [100000]Frame = undefined;
 var blocks: [100000]Block = undefined;
 
+const ProgramCounter = struct { opcode: u32, operand: u32 };
+
 const Frame = struct {
     fn_idx: u32,
     /// Index to start of code in opcodes/operands.
-    opcode_pc: u32,
-    operand_pc: u32,
+    pc: ProgramCounter,
     stack_begin: u32,
     locals_begin: u32,
     return_arity: u32,
@@ -306,8 +339,7 @@ const Mutability = enum { @"const", @"var" };
 
 const Function = struct {
     /// Index to start of code in opcodes/operands.
-    opcode_pc: u32,
-    operand_pc: u32,
+    pc: ProgramCounter,
     locals_count: u32,
     /// Index into types.
     type_idx: u32,
@@ -365,7 +397,7 @@ const VirtualMachine = struct {
     args: []const []const u8,
     table: []const u32,
 
-    fn decodeCode(vm: *VirtualMachine, func: *Function, code_i: *u32, opcode_pc: *u32, operand_pc: *u32) void {
+    fn decodeCode(vm: *VirtualMachine, func: *Function, code_i: *u32, pc: *ProgramCounter) void {
         const module_bytes = vm.module_bytes;
         const opcodes = vm.opcodes;
         const operands = vm.operands;
@@ -404,6 +436,7 @@ const VirtualMachine = struct {
                 => stack_depth - 1,
 
                 .select => stack_depth - 3 + 1,
+
                 .local_get,
                 .global_get,
                 .memory_size,
@@ -624,8 +657,8 @@ const VirtualMachine = struct {
                     blocks[blocks_i] = .{
                         .stack_depth = stack_depth,
                         .block_type = block_type,
-                        .loop_opcode_pc_or_max = opcode_pc.*,
-                        .loop_operand_pc_or_fixups = operand_pc.*,
+                        .loop_opcode_pc_or_max = pc.opcode,
+                        .loop_operand_pc_or_fixups = pc.operand,
                     };
                     blocks_i += 1;
                 },
@@ -633,8 +666,8 @@ const VirtualMachine = struct {
                 .@"else" => @panic("unhandled opcode: else"),
                 .end => {
                     if (blocks_i == 0) {
-                        opcodes[opcode_pc.*] = @enumToInt(wasm.Opcode.@"return");
-                        opcode_pc.* += 1;
+                        opcodes[pc.opcode] = @enumToInt(wasm.Opcode.@"return");
+                        pc.opcode += 1;
                         return;
                     }
                     blocks_i -= 1;
@@ -644,8 +677,8 @@ const VirtualMachine = struct {
                         while (next_fixup != std.math.maxInt(u32)) {
                             const fixup_operand_i = next_fixup;
                             next_fixup = operands[fixup_operand_i];
-                            operands[fixup_operand_i] = opcode_pc.*;
-                            operands[fixup_operand_i + 1] = operand_pc.*;
+                            operands[fixup_operand_i] = pc.opcode;
+                            operands[fixup_operand_i + 1] = pc.operand;
                         }
                     }
                     assert(stack_depth > std.math.maxInt(u32) / 4 or stack_depth == block.stack_depth);
@@ -653,28 +686,28 @@ const VirtualMachine = struct {
                 },
                 .br, .br_if => {
                     const label_idx = readVarInt(module_bytes, code_i, u32);
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
                     const target_block = &blocks[blocks_i - 1 - label_idx];
                     const is_loop = target_block.loop_opcode_pc_or_max != std.math.maxInt(u32);
                     if (!is_loop) stack_depth -= typeSize(target_block.block_type);
-                    operands[operand_pc.*] = (stack_depth - target_block.stack_depth) << 1 |
+                    operands[pc.operand] = (stack_depth - target_block.stack_depth) << 1 |
                         typeSize(target_block.block_type);
                     if (is_loop) {
-                        operands[operand_pc.* + 1] = target_block.loop_opcode_pc_or_max;
-                        operands[operand_pc.* + 2] = target_block.loop_operand_pc_or_fixups;
+                        operands[pc.operand + 1] = target_block.loop_opcode_pc_or_max;
+                        operands[pc.operand + 2] = target_block.loop_operand_pc_or_fixups;
                     } else {
-                        operands[operand_pc.* + 1] = target_block.loop_operand_pc_or_fixups;
-                        target_block.loop_operand_pc_or_fixups = operand_pc.* + 1;
+                        operands[pc.operand + 1] = target_block.loop_operand_pc_or_fixups;
+                        target_block.loop_operand_pc_or_fixups = pc.operand + 1;
                     }
-                    operand_pc.* += 3;
+                    pc.operand += 3;
                 },
                 .br_table => {
                     const labels_len = readVarInt(module_bytes, code_i, u32);
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = labels_len;
-                    operand_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = labels_len;
+                    pc.operand += 1;
                     var i: u32 = 0;
                     var common_block_type: i32 = undefined;
                     while (i <= labels_len) : (i += 1) {
@@ -686,24 +719,24 @@ const VirtualMachine = struct {
                             stack_depth -= typeSize(block_type);
                             common_block_type = block_type;
                         } else assert(block_type == common_block_type);
-                        operands[operand_pc.*] = (stack_depth - target_block.stack_depth) << 1 |
+                        operands[pc.operand] = (stack_depth - target_block.stack_depth) << 1 |
                             typeSize(block_type);
                         if (is_loop) {
-                            operands[operand_pc.* + 1] = target_block.loop_opcode_pc_or_max;
-                            operands[operand_pc.* + 2] = target_block.loop_operand_pc_or_fixups;
+                            operands[pc.operand + 1] = target_block.loop_opcode_pc_or_max;
+                            operands[pc.operand + 2] = target_block.loop_operand_pc_or_fixups;
                         } else {
-                            operands[operand_pc.* + 1] = target_block.loop_operand_pc_or_fixups;
-                            target_block.loop_operand_pc_or_fixups = operand_pc.* + 1;
+                            operands[pc.operand + 1] = target_block.loop_operand_pc_or_fixups;
+                            target_block.loop_operand_pc_or_fixups = pc.operand + 1;
                         }
-                        operand_pc.* += 3;
+                        pc.operand += 3;
                     }
                 },
                 .call => {
                     const fn_id = readVarInt(module_bytes, code_i, u32);
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = fn_id;
-                    operand_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = fn_id;
+                    pc.operand += 1;
                     const type_idx = if (fn_id < vm.imports.len)
                         vm.imports[fn_id].type_idx
                     else
@@ -713,10 +746,10 @@ const VirtualMachine = struct {
                 },
                 .call_indirect => {
                     const type_idx = readVarInt(module_bytes, code_i, u32);
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = type_idx;
-                    operand_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = type_idx;
+                    pc.operand += 1;
                     assert(readVarInt(module_bytes, code_i, u32) == 0);
                     const info = funcTypeInfo(module_bytes, vm.types[type_idx]);
                     stack_depth = stack_depth - info.param_count + info.return_arity;
@@ -727,10 +760,10 @@ const VirtualMachine = struct {
                 .global_get,
                 .global_set,
                 => {
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = readVarInt(module_bytes, code_i, u32);
-                    operand_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = readVarInt(module_bytes, code_i, u32);
+                    pc.operand += 1;
                 },
                 .i32_load,
                 .i64_load,
@@ -756,47 +789,49 @@ const VirtualMachine = struct {
                 .i64_store16,
                 .i64_store32,
                 => {
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
                     _ = readVarInt(module_bytes, code_i, u32);
-                    operands[operand_pc.*] = readVarInt(module_bytes, code_i, u32);
-                    operand_pc.* += 1;
+                    operands[pc.operand] = readVarInt(module_bytes, code_i, u32);
+                    offset_counts[@boolToInt(operands[pc.operand] != 0)] += 1;
+                    max_offset = @max(operands[pc.operand], max_offset);
+                    pc.operand += 1;
                 },
                 .memory_size, .memory_grow => {
                     assert(module_bytes[code_i.*] == 0);
                     code_i.* += 1;
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
                 },
                 .i32_const => {
                     const x = @bitCast(u32, readVarInt(module_bytes, code_i, i32));
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = x;
-                    operand_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = x;
+                    pc.operand += 1;
                 },
                 .i64_const => {
                     const x = @bitCast(u64, readVarInt(module_bytes, code_i, i64));
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = @truncate(u32, x);
-                    operands[operand_pc.* + 1] = @truncate(u32, x >> 32);
-                    operand_pc.* += 2;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = @truncate(u32, x);
+                    operands[pc.operand + 1] = @truncate(u32, x >> 32);
+                    pc.operand += 2;
                 },
                 .f32_const => {
                     const x = @bitCast(u32, readFloat32(module_bytes, code_i));
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = x;
-                    operand_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = x;
+                    pc.operand += 1;
                 },
                 .f64_const => {
                     const x = @bitCast(u64, readFloat64(module_bytes, code_i));
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
-                    operands[operand_pc.*] = @truncate(u32, x);
-                    operands[operand_pc.* + 1] = @truncate(u32, x >> 32);
-                    operand_pc.* += 2;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = @truncate(u32, x);
+                    operands[pc.operand + 1] = @truncate(u32, x >> 32);
+                    pc.operand += 2;
                 },
                 .prefixed => switch (@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)) {
                     .i32_trunc_sat_f32_s,
@@ -808,29 +843,29 @@ const VirtualMachine = struct {
                     .i64_trunc_sat_f64_s,
                     .i64_trunc_sat_f64_u,
                     => {
-                        opcodes[opcode_pc.*] = opcode;
-                        opcodes[opcode_pc.* + 1] = prefixed_opcode;
-                        opcode_pc.* += 2;
+                        opcodes[pc.opcode] = opcode;
+                        opcodes[pc.opcode + 1] = prefixed_opcode;
+                        pc.opcode += 2;
                     },
                     .memory_copy => {
                         assert(module_bytes[code_i.*] == 0 and module_bytes[code_i.* + 1] == 0);
                         code_i.* += 2;
-                        opcodes[opcode_pc.*] = opcode;
-                        opcodes[opcode_pc.* + 1] = prefixed_opcode;
-                        opcode_pc.* += 2;
+                        opcodes[pc.opcode] = opcode;
+                        opcodes[pc.opcode + 1] = prefixed_opcode;
+                        pc.opcode += 2;
                     },
                     .memory_fill => {
                         assert(module_bytes[code_i.*] == 0);
                         code_i.* += 1;
-                        opcodes[opcode_pc.*] = opcode;
-                        opcodes[opcode_pc.* + 1] = prefixed_opcode;
-                        opcode_pc.* += 2;
+                        opcodes[pc.opcode] = opcode;
+                        opcodes[pc.opcode + 1] = prefixed_opcode;
+                        pc.opcode += 2;
                     },
                     else => unreachable,
                 },
                 else => {
-                    opcodes[opcode_pc.*] = opcode;
-                    opcode_pc.* += 1;
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
                 },
             }
 
@@ -848,7 +883,7 @@ const VirtualMachine = struct {
 
     fn br(vm: *VirtualMachine) void {
         const frame = &frames[vm.frames_index];
-        const stack_info = vm.operands[frame.operand_pc];
+        const stack_info = vm.operands[frame.pc.operand];
         const result_size = @truncate(u1, stack_info);
         const stack_adjust = stack_info >> 1;
         std.mem.copy(
@@ -857,8 +892,8 @@ const VirtualMachine = struct {
             vm.stack[vm.stack_top..][0..result_size],
         );
         vm.stack_top -= stack_adjust;
-        frame.opcode_pc = vm.operands[frame.operand_pc + 1];
-        frame.operand_pc = vm.operands[frame.operand_pc + 2];
+        frame.pc.opcode = vm.operands[frame.pc.operand + 1];
+        frame.pc.operand = vm.operands[frame.pc.operand + 2];
     }
 
     fn call(vm: *VirtualMachine, fn_id: u32) void {
@@ -884,8 +919,7 @@ const VirtualMachine = struct {
         frames[vm.frames_index] = .{
             .fn_idx = fn_idx,
             .return_arity = info.return_arity,
-            .opcode_pc = func.opcode_pc,
-            .operand_pc = func.operand_pc,
+            .pc = func.pc,
             .stack_begin = vm.stack_top,
             .locals_begin = locals_begin,
         };
@@ -1064,16 +1098,15 @@ const VirtualMachine = struct {
         const operands = vm.operands;
         while (true) {
             const frame = &frames[vm.frames_index];
-            const opcode_pc = &frame.opcode_pc;
-            const operand_pc = &frame.operand_pc;
-            const op = @intToEnum(wasm.Opcode, opcodes[opcode_pc.*]);
-            opcode_pc.* += 1;
+            const pc = &frame.pc;
+            const op = @intToEnum(wasm.Opcode, opcodes[pc.opcode]);
+            pc.opcode += 1;
             if (vm.stack_top > 0) {
                 cpu_log.debug("stack[{d}]={x} pc={d}:{d}, op={s}", .{
-                    vm.stack_top - 1, vm.stack[vm.stack_top - 1], opcode_pc.*, operand_pc.*, @tagName(op),
+                    vm.stack_top - 1, vm.stack[vm.stack_top - 1], pc.opcode, pc.operand, @tagName(op),
                 });
             } else {
-                cpu_log.debug("<empty> pc={d}:{d}, op={s}", .{ opcode_pc.*, operand_pc.*, @tagName(op) });
+                cpu_log.debug("<empty> pc={d}:{d}, op={s}", .{ pc.opcode, pc.operand, @tagName(op) });
             }
             switch (op) {
                 .@"unreachable" => @panic("unreachable reached"),
@@ -1091,12 +1124,12 @@ const VirtualMachine = struct {
                     if (vm.pop(u32) != 0) {
                         vm.br();
                     } else {
-                        operand_pc.* += 3;
+                        pc.operand += 3;
                     }
                 },
                 .br_table => {
-                    const index = @min(vm.pop(u32), operands[operand_pc.*]);
-                    operand_pc.* += 1 + index * 3;
+                    const index = @min(vm.pop(u32), operands[pc.operand]);
+                    pc.operand += 1 + index * 3;
                     vm.br();
                 },
                 .@"return" => {
@@ -1108,13 +1141,13 @@ const VirtualMachine = struct {
                     vm.frames_index -= 1;
                 },
                 .call => {
-                    const fn_id = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const fn_id = operands[pc.operand];
+                    pc.operand += 1;
                     vm.call(fn_id);
                 },
                 .call_indirect => {
-                    const type_idx = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const type_idx = operands[pc.operand];
+                    pc.operand += 1;
                     cpu_log.debug("type_idx={d}", .{type_idx});
                     const fn_id = vm.table[vm.pop(u32)];
                     vm.call(fn_id);
@@ -1130,164 +1163,164 @@ const VirtualMachine = struct {
                     vm.push(u64, result);
                 },
                 .local_get => {
-                    const idx = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const idx = operands[pc.operand];
+                    pc.operand += 1;
                     //cpu_log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
                     const val = vm.stack[idx + frame.locals_begin];
                     vm.push(u64, val);
                 },
                 .local_set => {
-                    const idx = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const idx = operands[pc.operand];
+                    pc.operand += 1;
                     //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     vm.stack[idx + frame.locals_begin] = vm.pop(u64);
                 },
                 .local_tee => {
-                    const idx = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const idx = operands[pc.operand];
+                    pc.operand += 1;
                     //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
                     vm.stack[idx + frame.locals_begin] = vm.stack[vm.stack_top - 1];
                 },
                 .global_get => {
-                    const idx = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const idx = operands[pc.operand];
+                    pc.operand += 1;
                     vm.push(u64, vm.globals[idx]);
                 },
                 .global_set => {
-                    const idx = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const idx = operands[pc.operand];
+                    pc.operand += 1;
                     vm.globals[idx] = vm.pop(u64);
                 },
                 .i32_load => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.push(u32, mem.readIntLittle(u32, vm.memory[offset..][0..4]));
                 },
                 .i64_load => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.push(u64, mem.readIntLittle(u64, vm.memory[offset..][0..8]));
                 },
                 .f32_load => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(u32, vm.memory[offset..][0..4]);
                     vm.push(u32, int);
                 },
                 .f64_load => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(u64, vm.memory[offset..][0..8]);
                     vm.push(u64, int);
                 },
                 .i32_load8_s => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.push(i32, @bitCast(i8, vm.memory[offset]));
                 },
                 .i32_load8_u => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.push(u32, vm.memory[offset]);
                 },
                 .i32_load16_s => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(i16, vm.memory[offset..][0..2]);
                     vm.push(i32, int);
                 },
                 .i32_load16_u => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(u16, vm.memory[offset..][0..2]);
                     vm.push(u32, int);
                 },
                 .i64_load8_s => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.push(i64, @bitCast(i8, vm.memory[offset]));
                 },
                 .i64_load8_u => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.push(u64, vm.memory[offset]);
                 },
                 .i64_load16_s => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(i16, vm.memory[offset..][0..2]);
                     vm.push(i64, int);
                 },
                 .i64_load16_u => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(u16, vm.memory[offset..][0..2]);
                     vm.push(u64, int);
                 },
                 .i64_load32_s => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(i32, vm.memory[offset..][0..4]);
                     vm.push(i64, int);
                 },
                 .i64_load32_u => {
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     const int = mem.readIntLittle(u32, vm.memory[offset..][0..4]);
                     vm.push(u64, int);
                 },
                 .i32_store => {
                     const operand = vm.pop(u32);
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     mem.writeIntLittle(u32, vm.memory[offset..][0..4], operand);
                 },
                 .i64_store => {
                     const operand = vm.pop(u64);
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     mem.writeIntLittle(u64, vm.memory[offset..][0..8], operand);
                 },
                 .f32_store => {
                     const int = @bitCast(u32, vm.pop(f32));
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     mem.writeIntLittle(u32, vm.memory[offset..][0..4], int);
                 },
                 .f64_store => {
                     const int = @bitCast(u64, vm.pop(f64));
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     mem.writeIntLittle(u64, vm.memory[offset..][0..8], int);
                 },
                 .i32_store8 => {
                     const small = @truncate(u8, vm.pop(u32));
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.memory[offset] = small;
                 },
                 .i32_store16 => {
                     const small = @truncate(u16, vm.pop(u32));
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     mem.writeIntLittle(u16, vm.memory[offset..][0..2], small);
                 },
                 .i64_store8 => {
                     const operand = @truncate(u8, vm.pop(u64));
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     vm.memory[offset] = operand;
                 },
                 .i64_store16 => {
                     const small = @truncate(u16, vm.pop(u64));
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     mem.writeIntLittle(u16, vm.memory[offset..][0..2], small);
                 },
                 .i64_store32 => {
                     const small = @truncate(u32, vm.pop(u64));
-                    const offset = operands[operand_pc.*] + vm.pop(u32);
-                    operand_pc.* += 1;
+                    const offset = operands[pc.operand] + vm.pop(u32);
+                    pc.operand += 1;
                     mem.writeIntLittle(u32, vm.memory[offset..][0..4], small);
                 },
                 .memory_size => {
@@ -1306,23 +1339,23 @@ const VirtualMachine = struct {
                     }
                 },
                 .i32_const => {
-                    const x = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const x = operands[pc.operand];
+                    pc.operand += 1;
                     vm.push(i32, @bitCast(i32, x));
                 },
                 .i64_const => {
-                    const x = operands[operand_pc.*] | @as(u64, operands[operand_pc.* + 1]) << 32;
-                    operand_pc.* += 2;
+                    const x = operands[pc.operand] | @as(u64, operands[pc.operand + 1]) << 32;
+                    pc.operand += 2;
                     vm.push(i64, @bitCast(i64, x));
                 },
                 .f32_const => {
-                    const x = operands[operand_pc.*];
-                    operand_pc.* += 1;
+                    const x = operands[pc.operand];
+                    pc.operand += 1;
                     vm.push(f32, @bitCast(f32, x));
                 },
                 .f64_const => {
-                    const x = operands[operand_pc.*] | @as(u64, operands[operand_pc.* + 1]) << 32;
-                    operand_pc.* += 2;
+                    const x = operands[pc.operand] | @as(u64, operands[pc.operand + 1]) << 32;
+                    pc.operand += 2;
                     vm.push(f64, @bitCast(f64, x));
                 },
                 .i32_eqz => {
@@ -1886,8 +1919,8 @@ const VirtualMachine = struct {
                     vm.push(i64, @truncate(i32, vm.pop(i64)));
                 },
                 .prefixed => {
-                    const prefixed_op = @intToEnum(wasm.PrefixedOpcode, opcodes[opcode_pc.*]);
-                    opcode_pc.* += 1;
+                    const prefixed_op = @intToEnum(wasm.PrefixedOpcode, opcodes[pc.opcode]);
+                    pc.opcode += 1;
                     switch (prefixed_op) {
                         .i32_trunc_sat_f32_s => unreachable,
                         .i32_trunc_sat_f32_u => unreachable,
