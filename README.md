@@ -12,7 +12,7 @@ maintain the C code upstream in the main Zig repository.
 $ zig build -Drelease-fast
 $ cd ~/Downloads/zig
 $ ~/dev/zig-wasi/zig-out/bin/zig-wasi lib build-release/wasi/bin/zig.wasm build-exe src/main.zig -ofmt=c --name zig2 -lc --pkg-begin build_options build-release/options.zig --pkg-end -target x86_64-linux-musl --color on -Drelease
-<executed in 4:21:55 with peak RSS of 3.9 GiB>
+<executed in 5:15 with peak RSS of 1.2 GiB>
 $ # manual fixup: copy zig.h to cwd
 $ # manual fixup: change include <zig.h> to include "zig.h"
 $ # manual fixup: change signature of main to fix compile error
