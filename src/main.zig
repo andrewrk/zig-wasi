@@ -235,21 +235,13 @@ pub fn main() !void {
         break :t table;
     };
 
-    frames[0] = .{
-        .fn_idx = 0,
-        .pc = undefined,
-        .stack_begin = undefined,
-        .locals_begin = undefined,
-        .result_count = 0,
-    };
-
     var vm: VirtualMachine = .{
         .stack = try arena.alloc(u64, 10000000),
         .module_bytes = module_bytes,
-        .opcodes = try arena.alloc(u8, 1000000),
-        .operands = try arena.alloc(u32, 1000000),
+        .opcodes = try arena.alloc(u8, 2000000),
+        .operands = try arena.alloc(u32, 2000000),
         .stack_top = 0,
-        .frames_index = 1,
+        .pc = undefined,
         .functions = functions,
         .types = types,
         .globals = globals,
@@ -312,6 +304,7 @@ pub fn main() !void {
         stats_log.debug("{} zero offsets", .{offset_counts[0]});
         stats_log.debug("{} non-zero offsets", .{offset_counts[1]});
         stats_log.debug("{} max offset", .{max_offset});
+        stats_log.debug("{} max label depth", .{max_label_depth});
     }
 
     vm.call(start_fn_idx);
@@ -322,19 +315,11 @@ var offset_counts = [2]u64{ 0, 0 };
 var max_offset: u64 = 0;
 
 const section_count = @typeInfo(wasm.Section).Enum.fields.len;
-var frames: [100000]Frame = undefined;
-var labels: [100000]Label = undefined;
+var labels: [500]Label = undefined;
+
+var max_label_depth: u64 = 0;
 
 const ProgramCounter = struct { opcode: u32, operand: u32 };
-
-const Frame = struct {
-    fn_idx: u32,
-    /// Index to start of code in opcodes/operands.
-    pc: ProgramCounter,
-    stack_begin: u32,
-    locals_begin: u32,
-    result_count: u32,
-};
 
 const Mutability = enum { @"const", @"var" };
 
@@ -376,7 +361,7 @@ const VirtualMachine = struct {
     stack: []u64,
     /// Points to one after the last stack item.
     stack_top: u32,
-    frames_index: u32,
+    pc: ProgramCounter,
     memory_len: u32,
     module_bytes: []const u8,
     opcodes: []u8,
@@ -394,7 +379,7 @@ const VirtualMachine = struct {
         const module_bytes = vm.module_bytes;
         const opcodes = vm.opcodes;
         const operands = vm.operands;
-        var stack_depth: u32 = 0;
+        var stack_depth = func.type_info.param_count + func.locals_count + 2;
         var label_i: u32 = 0;
         labels[label_i] = .{
             .kind = .block,
@@ -410,6 +395,7 @@ const VirtualMachine = struct {
                 @tagName(@intToEnum(wasm.Opcode, opcode)),
             });
 
+            const initial_stack_depth = stack_depth;
             var prefixed_opcode: u8 = undefined;
             stack_depth = switch (@intToEnum(wasm.Opcode, opcode)) {
                 .@"unreachable",
@@ -420,9 +406,8 @@ const VirtualMachine = struct {
                 .end,
                 .br,
                 .call,
+                .@"return",
                 => stack_depth,
-
-                .@"return" => stack_depth - labels[0].operandCount(),
 
                 .@"if",
                 .br_if,
@@ -642,6 +627,7 @@ const VirtualMachine = struct {
             switch (@intToEnum(wasm.Opcode, opcode)) {
                 .block, .loop, .@"if" => |kind| {
                     label_i += 1;
+                    max_label_depth = @max(label_i, max_label_depth);
                     const label = &labels[label_i];
                     const block_type = readVarInt(module_bytes, code_i, i33);
                     const type_info = if (block_type < 0) TypeInfo{
@@ -675,8 +661,8 @@ const VirtualMachine = struct {
                     const operand_count = label.operandCount();
                     opcodes[pc.opcode] = @enumToInt(wasm.Opcode.br);
                     pc.opcode += 1;
-                    operands[pc.operand] = (stack_depth - operand_count - label.stack_depth) << 1 |
-                        @intCast(u1, operand_count);
+                    operands[pc.operand] = @intCast(u1, operand_count) |
+                        @intCast(u31, stack_depth - operand_count - label.stack_depth) << 1;
                     operands[pc.operand + 1] = label.ref_list;
                     label.ref_list = pc.operand + 1;
                     pc.operand += 3;
@@ -708,6 +694,13 @@ const VirtualMachine = struct {
                     if (label_i == 0) {
                         opcodes[pc.opcode] = @enumToInt(wasm.Opcode.@"return");
                         pc.opcode += 1;
+                        const operand_count = labels[0].operandCount();
+                        operands[pc.operand] = @intCast(u1, operand_count) |
+                            @intCast(u31, 2 + operand_count) << 1;
+                        stack_depth -= operand_count;
+                        assert(stack_depth == labels[0].stack_depth);
+                        operands[pc.operand + 1] = stack_depth;
+                        pc.operand += 2;
                         return;
                     }
                     label_i -= 1;
@@ -718,8 +711,8 @@ const VirtualMachine = struct {
                     const operand_count = label.operandCount();
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
-                    operands[pc.operand] = (stack_depth - operand_count - label.stack_depth) << 1 |
-                        @intCast(u1, operand_count);
+                    operands[pc.operand] = @intCast(u1, operand_count) |
+                        @intCast(u31, stack_depth - operand_count - label.stack_depth) << 1;
                     operands[pc.operand + 1] = label.ref_list;
                     label.ref_list = pc.operand + 1;
                     pc.operand += 3;
@@ -735,8 +728,8 @@ const VirtualMachine = struct {
                         const label_idx = readVarInt(module_bytes, code_i, u32);
                         const label = &labels[label_i - label_idx];
                         const operand_count = label.operandCount();
-                        operands[pc.operand] = (stack_depth - operand_count - label.stack_depth) << 1 |
-                            @intCast(u1, operand_count);
+                        operands[pc.operand] = @intCast(u1, operand_count) |
+                            @intCast(u31, stack_depth - operand_count - label.stack_depth) << 1;
                         operands[pc.operand + 1] = label.ref_list;
                         label.ref_list = pc.operand + 1;
                         pc.operand += 3;
@@ -762,15 +755,33 @@ const VirtualMachine = struct {
                     const info = vm.types[type_idx];
                     stack_depth = stack_depth - info.param_count + info.result_count;
                 },
+                .@"return" => {
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    const operand_count = labels[0].operandCount();
+                    operands[pc.operand] = @intCast(u1, operand_count) |
+                        @intCast(u31, 2 + stack_depth - labels[0].stack_depth) << 1;
+                    stack_depth -= operand_count;
+                    operands[pc.operand + 1] = stack_depth;
+                    pc.operand += 2;
+                },
                 .local_get,
                 .local_set,
                 .local_tee,
+                => {
+                    const local_idx = readVarInt(module_bytes, code_i, u32);
+                    opcodes[pc.opcode] = opcode;
+                    pc.opcode += 1;
+                    operands[pc.operand] = initial_stack_depth - local_idx;
+                    pc.operand += 1;
+                },
                 .global_get,
                 .global_set,
                 => {
+                    const global_idx = readVarInt(module_bytes, code_i, u32);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
-                    operands[pc.operand] = readVarInt(module_bytes, code_i, u32);
+                    operands[pc.operand] = global_idx;
                     pc.operand += 1;
                 },
                 .i32_load,
@@ -890,8 +901,7 @@ const VirtualMachine = struct {
     }
 
     fn br(vm: *VirtualMachine) void {
-        const frame = &frames[vm.frames_index];
-        const stack_info = vm.operands[frame.pc.operand];
+        const stack_info = vm.operands[vm.pc.operand];
         const result_count = @truncate(u1, stack_info);
         const stack_adjust = stack_info >> 1;
         std.mem.copy(
@@ -900,8 +910,8 @@ const VirtualMachine = struct {
             vm.stack[vm.stack_top - result_count ..][0..result_count],
         );
         vm.stack_top -= stack_adjust;
-        frame.pc.opcode = vm.operands[frame.pc.operand + 1];
-        frame.pc.operand = vm.operands[frame.pc.operand + 2];
+        vm.pc.opcode = vm.operands[vm.pc.operand + 1];
+        vm.pc.operand = vm.operands[vm.pc.operand + 2];
     }
 
     fn call(vm: *VirtualMachine, fn_id: u32) void {
@@ -910,25 +920,20 @@ const VirtualMachine = struct {
             return callImport(vm, imp);
         }
         const fn_idx = fn_id - @intCast(u32, vm.imports.len);
-        const func = vm.functions[fn_idx];
-        const locals_begin = vm.stack_top - func.type_info.param_count;
+        const func = &vm.functions[fn_idx];
 
-        func_log.debug("enter fn_id: {d}, param_count: {d}, result_count: {d}, locals_begin: {d}, locals_count: {d}", .{
-            fn_id, func.type_info.param_count, func.type_info.result_count, locals_begin, func.locals_count,
+        func_log.debug("enter fn_id: {d}, param_count: {d}, result_count: {d}, locals_count: {d}", .{
+            fn_id, func.type_info.param_count, func.type_info.result_count, func.locals_count,
         });
 
         // Push zeroed locals to stack
         mem.set(u64, vm.stack[vm.stack_top..][0..func.locals_count], 0);
         vm.stack_top += func.locals_count;
 
-        vm.frames_index += 1;
-        frames[vm.frames_index] = .{
-            .fn_idx = fn_idx,
-            .result_count = func.type_info.result_count,
-            .pc = func.pc,
-            .stack_begin = vm.stack_top,
-            .locals_begin = locals_begin,
-        };
+        vm.push(u32, vm.pc.opcode);
+        vm.push(u32, vm.pc.operand);
+
+        vm.pc = func.pc;
     }
 
     fn callImport(vm: *VirtualMachine, imp: Import) void {
@@ -1102,9 +1107,8 @@ const VirtualMachine = struct {
     fn run(vm: *VirtualMachine) noreturn {
         const opcodes = vm.opcodes;
         const operands = vm.operands;
+        const pc = &vm.pc;
         while (true) {
-            const frame = &frames[vm.frames_index];
-            const pc = &frame.pc;
             const op = @intToEnum(wasm.Opcode, opcodes[pc.opcode]);
             pc.opcode += 1;
             if (vm.stack_top > 0) {
@@ -1139,16 +1143,20 @@ const VirtualMachine = struct {
                     vm.br();
                 },
                 .@"return" => {
-                    func_log.debug("exit fn_id: {d}, resume fn_id: {d}", .{
-                        frame.fn_idx + @intCast(u32, vm.imports.len),
-                        frames[vm.frames_index - 1].fn_idx + @intCast(u32, vm.imports.len),
-                    });
-                    const n = frame.result_count;
-                    const dst = vm.stack[frame.locals_begin..][0..n];
-                    const src = vm.stack[vm.stack_top - n ..][0..n];
-                    mem.copy(u64, dst, src);
-                    vm.stack_top = frame.locals_begin + n;
-                    vm.frames_index -= 1;
+                    const stack_info = vm.operands[pc.operand];
+                    const result_count = @truncate(u1, stack_info);
+                    const ret_pc_offset = stack_info >> 1;
+                    const stack_adjust = vm.operands[pc.operand + 1];
+
+                    pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
+                    pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+
+                    mem.copy(
+                        u64,
+                        vm.stack[vm.stack_top - result_count - stack_adjust ..],
+                        vm.stack[vm.stack_top - result_count ..][0..result_count],
+                    );
+                    vm.stack_top -= stack_adjust;
                 },
                 .call => {
                     const fn_id = operands[pc.operand];
@@ -1170,23 +1178,19 @@ const VirtualMachine = struct {
                     vm.push(u64, result);
                 },
                 .local_get => {
-                    const idx = operands[pc.operand];
+                    const local = &vm.stack[vm.stack_top - operands[pc.operand]];
                     pc.operand += 1;
-                    //cpu_log.debug("reading local at stack[{d}]", .{idx + frame.locals_begin});
-                    const val = vm.stack[idx + frame.locals_begin];
-                    vm.push(u64, val);
+                    vm.push(u64, local.*);
                 },
                 .local_set => {
-                    const idx = operands[pc.operand];
+                    const local = &vm.stack[vm.stack_top - operands[pc.operand]];
                     pc.operand += 1;
-                    //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
-                    vm.stack[idx + frame.locals_begin] = vm.pop(u64);
+                    local.* = vm.pop(u64);
                 },
                 .local_tee => {
-                    const idx = operands[pc.operand];
+                    const local = &vm.stack[vm.stack_top - operands[pc.operand]];
                     pc.operand += 1;
-                    //cpu_log.debug("writing local at stack[{d}]", .{idx + frame.locals_begin});
-                    vm.stack[idx + frame.locals_begin] = vm.stack[vm.stack_top - 1];
+                    local.* = vm.stack[vm.stack_top - 1];
                 },
                 .global_get => {
                     const idx = operands[pc.operand];
