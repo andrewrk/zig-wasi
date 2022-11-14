@@ -325,6 +325,8 @@ enum Op {
     Op_prefixed = 0xFC,
 };
 
+static const uint32_t wasm_page_size = 64 * 1024;
+
 struct ProgramCounter {
     uint32_t opcode;
     uint32_t operand;
@@ -343,8 +345,7 @@ struct Function {
 };
 
 int main(int argc, char **argv) {
-    const char *memory = mmap( NULL, max_memory, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANON, -1, 0);
+    char *memory = mmap( NULL, max_memory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 
     const char *zig_lib_dir_path = argv[1];
     const char *zig_cache_dir_path = argv[2];
@@ -471,6 +472,33 @@ int main(int argc, char **argv) {
             if (opcode != Op_i32_const) panic("expected i32_const op");
             uint32_t init = read32_ileb128(mod.ptr, &i);
             *global = (uint32_t)init;
+        }
+    }
+
+    // Allocate and initialize memory.
+    uint32_t memory_len;
+    {
+        i = section_starts[Section_memory];
+        uint32_t memories_len = read32_uleb128(mod.ptr, &i);
+        if (memories_len != 1) panic("unexpected memory count");
+        uint32_t flags = read32_uleb128(mod.ptr, &i);
+        memory_len = read32_uleb128(mod.ptr, &i) * wasm_page_size;
+
+        i = section_starts[Section_data];
+        uint32_t datas_count = read32_uleb128(mod.ptr, &i);
+        for (; datas_count > 0; datas_count -= 1) {
+            uint32_t mode = read32_uleb128(mod.ptr, &i);
+            if (mode != 0) panic("expected mode 0");
+            enum Op opcode = mod.ptr[i];
+            i += 1;
+            if (opcode != Op_i32_const) panic("expected opcode i32_const");
+            uint32_t offset = read32_uleb128(mod.ptr, &i);
+            enum Op end = mod.ptr[i];
+            if (end != Op_end) panic("expected end opcode");
+            i += 1;
+            uint32_t bytes_len = read32_uleb128(mod.ptr, &i);
+            memcpy(memory + offset, mod.ptr + i, bytes_len);
+            i += bytes_len;
         }
     }
 
