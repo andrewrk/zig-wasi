@@ -92,6 +92,26 @@ static uint32_t read32_uleb128(const char *ptr, ssize_t *i) {
     }
 }
 
+static int32_t read32_ileb128(const char *ptr, ssize_t *i) {
+    int64_t result = 0;
+    uint32_t shift = 0;
+
+    for (;;) {
+        uint32_t byte = ptr[*i];
+        *i += 1;
+        result |= ((byte & 0x7f) << shift);
+        shift += 7;
+        if ((byte & 0x80) == 0) {
+            if ((byte & 0x40)) {
+                uint64_t extend = 0;
+                result |= (~extend << shift);
+            }
+            return result;
+        }
+        if (shift >= 32) panic("read32_ileb128 failed");
+    }
+}
+
 static struct ByteSlice read_name(char *ptr, ssize_t *i) {
     uint32_t len = read32_uleb128(ptr, i);
     struct ByteSlice res;
@@ -121,6 +141,23 @@ enum Section {
     Section_code,
     Section_data,
     Section_data_count,
+};
+
+struct ProgramCounter {
+    uint32_t opcode;
+    uint32_t operand;
+};
+
+struct TypeInfo {
+    uint32_t param_count;
+    uint32_t result_count;
+};
+
+struct Function {
+    // Index to start of code in opcodes/operands.
+    struct ProgramCounter pc;
+    uint32_t locals_count;
+    struct TypeInfo type_info;
 };
 
 int main(int argc, char **argv) {
@@ -168,6 +205,27 @@ int main(int argc, char **argv) {
         i += section_len;
     }
 
+    // Map type indexes to offsets into the module.
+    struct TypeInfo *types;
+    {
+        i = section_starts[Section_type];
+        uint32_t types_len = read32_uleb128(mod.ptr, &i);
+        types = arena_alloc(sizeof(struct TypeInfo) * types_len);
+        for (size_t type_i = 0; type_i < types_len; type_i += 1) {
+            struct TypeInfo *info = &types[type_i];
+            if (mod.ptr[i] != 0x60) panic("bad type byte");
+            i += 1;
+            info->param_count = read32_uleb128(mod.ptr, &i);
+            for (uint32_t param_i = 0; param_i < info->param_count; param_i += 1) {
+                read32_ileb128(mod.ptr, &i);
+            }
+            info->result_count = read32_uleb128(mod.ptr, &i);
+            for (uint32_t result_i = 0; result_i < info->result_count; result_i += 1) {
+                read32_ileb128(mod.ptr, &i);
+            }
+        }
+    }
+
     // Count the imported functions so we can correct function references.
     struct Import *imports;
     {
@@ -183,6 +241,37 @@ int main(int argc, char **argv) {
             imp->type_idx = read32_uleb128(mod.ptr, &i);
         }
     }
+
+    // Find _start in the exports
+    uint32_t start_fn_idx;
+    {
+        i = section_starts[Section_export];
+        uint32_t count = read32_uleb128(mod.ptr, &i);
+        for (; count > 0; count -= 1) {
+            struct ByteSlice name = read_name(mod.ptr, &i);
+            uint32_t desc = read32_uleb128(mod.ptr, &i);
+            start_fn_idx = read32_uleb128(mod.ptr, &i);
+            if (desc == 0 && name.len == strlen("_start") &&
+                memcmp(name.ptr, "_start", name.len) == 0)
+            {
+                break;
+            }
+        }
+        if (count == 0) panic("_start symbol not found");
+    }
+
+    // Map function indexes to offsets into the module and type index.
+    struct Function *functions;
+    {
+        i = section_starts[Section_function];
+        uint32_t funcs_len = read32_uleb128(mod.ptr, &i);
+        functions = arena_alloc(sizeof(struct Function) * funcs_len);
+        for (size_t func_i = 0; func_i < funcs_len; func_i += 1) {
+            struct Function *func = &functions[func_i];
+            func->type_info = types[read32_uleb128(mod.ptr, &i)];
+        }
+    }
+
 
     panic("TODO: finish porting the rest");
 
