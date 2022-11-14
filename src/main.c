@@ -1,9 +1,11 @@
 // TODO get rid of _GNU_SOURCE
 #define _GNU_SOURCE
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
+#include <assert.h>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -78,7 +80,7 @@ static uint32_t read32le(const char *ptr) {
     return *((uint32_t *)ptr);
 }
 
-static uint32_t read32_uleb128(const char *ptr, ssize_t *i) {
+static uint32_t read32_uleb128(const char *ptr, uint32_t *i) {
     uint32_t result = 0;
     uint32_t shift = 0;
 
@@ -92,27 +94,31 @@ static uint32_t read32_uleb128(const char *ptr, ssize_t *i) {
     }
 }
 
-static int32_t read32_ileb128(const char *ptr, ssize_t *i) {
+static int64_t read64_ileb128(const char *ptr, uint32_t *i) {
     int64_t result = 0;
     uint32_t shift = 0;
 
     for (;;) {
-        uint32_t byte = ptr[*i];
+        uint64_t byte = ptr[*i];
         *i += 1;
         result |= ((byte & 0x7f) << shift);
         shift += 7;
         if ((byte & 0x80) == 0) {
-            if ((byte & 0x40)) {
+            if ((byte & 0x40) && (shift < 64)) {
                 uint64_t extend = 0;
                 result |= (~extend << shift);
             }
             return result;
         }
-        if (shift >= 32) panic("read32_ileb128 failed");
+        if (shift >= 64) panic("read64_ileb128 failed");
     }
 }
 
-static struct ByteSlice read_name(char *ptr, ssize_t *i) {
+static int32_t read32_ileb128(const char *ptr, uint32_t *i) {
+    return read64_ileb128(ptr, i);
+}
+
+static struct ByteSlice read_name(char *ptr, uint32_t *i) {
     uint32_t len = read32_uleb128(ptr, i);
     struct ByteSlice res;
     res.ptr = ptr + *i;
@@ -121,11 +127,19 @@ static struct ByteSlice read_name(char *ptr, ssize_t *i) {
     return res;
 }
 
-struct Import {
-    struct ByteSlice sym_name;
-    struct ByteSlice mod_name;
-    uint32_t type_idx;
-};
+static float read_f32(const char *ptr, uint32_t *i) {
+    float result;
+    memcpy(&result, ptr + *i, 4);
+    *i += 4;
+    return result;
+}
+
+static double read_f64(const char *ptr, uint32_t *i) {
+    double result;
+    memcpy(&result, ptr + *i, 8);
+    *i += 8;
+    return result;
+}
 
 enum Section {
     Section_custom,
@@ -325,6 +339,27 @@ enum Op {
     Op_prefixed = 0xFC,
 };
 
+enum PrefixedOp {
+    PrefixedOp_i32_trunc_sat_f32_s = 0x00,
+    PrefixedOp_i32_trunc_sat_f32_u = 0x01,
+    PrefixedOp_i32_trunc_sat_f64_s = 0x02,
+    PrefixedOp_i32_trunc_sat_f64_u = 0x03,
+    PrefixedOp_i64_trunc_sat_f32_s = 0x04,
+    PrefixedOp_i64_trunc_sat_f32_u = 0x05,
+    PrefixedOp_i64_trunc_sat_f64_s = 0x06,
+    PrefixedOp_i64_trunc_sat_f64_u = 0x07,
+    PrefixedOp_memory_init = 0x08,
+    PrefixedOp_data_drop = 0x09,
+    PrefixedOp_memory_copy = 0x0A,
+    PrefixedOp_memory_fill = 0x0B,
+    PrefixedOp_table_init = 0x0C,
+    PrefixedOp_elem_drop = 0x0D,
+    PrefixedOp_table_copy = 0x0E,
+    PrefixedOp_table_grow = 0x0F,
+    PrefixedOp_table_size = 0x10,
+    PrefixedOp_table_fill = 0x11,
+};
+
 static const uint32_t wasm_page_size = 64 * 1024;
 
 struct ProgramCounter {
@@ -343,6 +378,648 @@ struct Function {
     uint32_t locals_count;
     struct TypeInfo type_info;
 };
+
+struct Import {
+    struct ByteSlice sym_name;
+    struct ByteSlice mod_name;
+    struct TypeInfo type_info;
+};
+
+struct VirtualMachine {
+    uint64_t *stack;
+    /// Points to one after the last stack item.
+    uint32_t stack_top;
+    struct ProgramCounter pc;
+    uint32_t memory_len;
+    const char *mod_ptr;
+    uint8_t *opcodes;
+    uint32_t *operands;
+    struct Function *functions;
+    /// Type index to start of type in module_bytes.
+    struct TypeInfo *types;
+    uint64_t *globals;
+    char *memory;
+    struct Import *imports;
+    uint32_t imports_len;
+    char **args;
+    uint32_t *table;
+};
+
+struct Label {
+    enum Op kind;
+    uint32_t stack_depth;
+    struct TypeInfo type_info;
+    // this is a UINT32_MAX terminated linked list that is stored in the operands array
+    uint32_t ref_list;
+    union {
+        struct ProgramCounter loop_pc;
+        uint32_t else_ref;
+    } extra;
+};
+
+uint64_t offset_counts[2];
+uint64_t max_offset = 0;
+
+struct Label labels[500];
+uint64_t max_label_depth = 0;
+
+static uint32_t Label_operandCount(const struct Label *label) {
+    if (label->kind == Op_loop) {
+        return label->type_info.param_count;
+    } else {
+        return label->type_info.result_count;
+    }
+}
+
+static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint32_t *code_i,
+    struct ProgramCounter *pc)
+{
+    const char *mod_ptr = vm->mod_ptr;
+    uint8_t *opcodes = vm->opcodes;
+    uint32_t *operands = vm->operands;
+    uint32_t stack_depth = func->type_info.param_count + func->locals_count + 2;
+    uint32_t label_i = 0;
+    labels[label_i].kind = Op_block;
+    labels[label_i].stack_depth = stack_depth;
+    labels[label_i].type_info = func->type_info;
+    labels[label_i].ref_list = UINT32_MAX;
+
+    for (;;) {
+        enum Op opcode = mod_ptr[*code_i];
+        *code_i += 1;
+
+        uint32_t initial_stack_depth = stack_depth;
+        enum PrefixedOp prefixed_opcode;
+        switch (opcode) {
+            case Op_unreachable:
+            case Op_nop:
+            case Op_block:
+            case Op_loop:
+            case Op_else:
+            case Op_end:
+            case Op_br:
+            case Op_call:
+            case Op_return:
+            break;
+
+            case Op_if:
+            case Op_br_if:
+            case Op_br_table:
+            case Op_call_indirect:
+            case Op_drop:
+            case Op_local_set:
+            case Op_global_set:
+            stack_depth -= 1;
+            break;
+
+            case Op_select:
+            stack_depth -= 2;
+            break;
+
+            case Op_local_get:
+            case Op_global_get:
+            case Op_memory_size:
+            case Op_i32_const:
+            case Op_i64_const:
+            case Op_f32_const:
+            case Op_f64_const:
+            stack_depth += 1;
+            break;
+
+            case Op_local_tee:
+            case Op_i32_load:
+            case Op_i64_load:
+            case Op_f32_load:
+            case Op_f64_load:
+            case Op_i32_load8_s:
+            case Op_i32_load8_u:
+            case Op_i32_load16_s:
+            case Op_i32_load16_u:
+            case Op_i64_load8_s:
+            case Op_i64_load8_u:
+            case Op_i64_load16_s:
+            case Op_i64_load16_u:
+            case Op_i64_load32_s:
+            case Op_i64_load32_u:
+            case Op_memory_grow:
+            case Op_i32_eqz:
+            case Op_i32_clz:
+            case Op_i32_ctz:
+            case Op_i32_popcnt:
+            case Op_i64_eqz:
+            case Op_i64_clz:
+            case Op_i64_ctz:
+            case Op_i64_popcnt:
+            case Op_f32_abs:
+            case Op_f32_neg:
+            case Op_f32_ceil:
+            case Op_f32_floor:
+            case Op_f32_trunc:
+            case Op_f32_nearest:
+            case Op_f32_sqrt:
+            case Op_f64_abs:
+            case Op_f64_neg:
+            case Op_f64_ceil:
+            case Op_f64_floor:
+            case Op_f64_trunc:
+            case Op_f64_nearest:
+            case Op_f64_sqrt:
+            case Op_i32_wrap_i64:
+            case Op_i32_trunc_f32_s:
+            case Op_i32_trunc_f32_u:
+            case Op_i32_trunc_f64_s:
+            case Op_i32_trunc_f64_u:
+            case Op_i64_extend_i32_s:
+            case Op_i64_extend_i32_u:
+            case Op_i64_trunc_f32_s:
+            case Op_i64_trunc_f32_u:
+            case Op_i64_trunc_f64_s:
+            case Op_i64_trunc_f64_u:
+            case Op_f32_convert_i32_s:
+            case Op_f32_convert_i32_u:
+            case Op_f32_convert_i64_s:
+            case Op_f32_convert_i64_u:
+            case Op_f32_demote_f64:
+            case Op_f64_convert_i32_s:
+            case Op_f64_convert_i32_u:
+            case Op_f64_convert_i64_s:
+            case Op_f64_convert_i64_u:
+            case Op_f64_promote_f32:
+            case Op_i32_reinterpret_f32:
+            case Op_i64_reinterpret_f64:
+            case Op_f32_reinterpret_i32:
+            case Op_f64_reinterpret_i64:
+            case Op_i32_extend8_s:
+            case Op_i32_extend16_s:
+            case Op_i64_extend8_s:
+            case Op_i64_extend16_s:
+            case Op_i64_extend32_s:
+            break;
+
+            case Op_i32_store:
+            case Op_i64_store:
+            case Op_f32_store:
+            case Op_f64_store:
+            case Op_i32_store8:
+            case Op_i32_store16:
+            case Op_i64_store8:
+            case Op_i64_store16:
+            case Op_i64_store32:
+            stack_depth -= 2;
+            break;
+
+            case Op_i32_eq:
+            case Op_i32_ne:
+            case Op_i32_lt_s:
+            case Op_i32_lt_u:
+            case Op_i32_gt_s:
+            case Op_i32_gt_u:
+            case Op_i32_le_s:
+            case Op_i32_le_u:
+            case Op_i32_ge_s:
+            case Op_i32_ge_u:
+            case Op_i64_eq:
+            case Op_i64_ne:
+            case Op_i64_lt_s:
+            case Op_i64_lt_u:
+            case Op_i64_gt_s:
+            case Op_i64_gt_u:
+            case Op_i64_le_s:
+            case Op_i64_le_u:
+            case Op_i64_ge_s:
+            case Op_i64_ge_u:
+            case Op_f32_eq:
+            case Op_f32_ne:
+            case Op_f32_lt:
+            case Op_f32_gt:
+            case Op_f32_le:
+            case Op_f32_ge:
+            case Op_f64_eq:
+            case Op_f64_ne:
+            case Op_f64_lt:
+            case Op_f64_gt:
+            case Op_f64_le:
+            case Op_f64_ge:
+            case Op_i32_add:
+            case Op_i32_sub:
+            case Op_i32_mul:
+            case Op_i32_div_s:
+            case Op_i32_div_u:
+            case Op_i32_rem_s:
+            case Op_i32_rem_u:
+            case Op_i32_and:
+            case Op_i32_or:
+            case Op_i32_xor:
+            case Op_i32_shl:
+            case Op_i32_shr_s:
+            case Op_i32_shr_u:
+            case Op_i32_rotl:
+            case Op_i32_rotr:
+            case Op_i64_add:
+            case Op_i64_sub:
+            case Op_i64_mul:
+            case Op_i64_div_s:
+            case Op_i64_div_u:
+            case Op_i64_rem_s:
+            case Op_i64_rem_u:
+            case Op_i64_and:
+            case Op_i64_or:
+            case Op_i64_xor:
+            case Op_i64_shl:
+            case Op_i64_shr_s:
+            case Op_i64_shr_u:
+            case Op_i64_rotl:
+            case Op_i64_rotr:
+            case Op_f32_add:
+            case Op_f32_sub:
+            case Op_f32_mul:
+            case Op_f32_div:
+            case Op_f32_min:
+            case Op_f32_max:
+            case Op_f32_copysign:
+            case Op_f64_add:
+            case Op_f64_sub:
+            case Op_f64_mul:
+            case Op_f64_div:
+            case Op_f64_min:
+            case Op_f64_max:
+            case Op_f64_copysign:
+            stack_depth -= 1;
+            break;
+
+            case Op_prefixed:
+            prefixed_opcode = read32_uleb128(mod_ptr, code_i);
+            switch (prefixed_opcode) {
+                case PrefixedOp_i32_trunc_sat_f32_s:
+                case PrefixedOp_i32_trunc_sat_f32_u:
+                case PrefixedOp_i32_trunc_sat_f64_s:
+                case PrefixedOp_i32_trunc_sat_f64_u:
+                case PrefixedOp_i64_trunc_sat_f32_s:
+                case PrefixedOp_i64_trunc_sat_f32_u:
+                case PrefixedOp_i64_trunc_sat_f64_s:
+                case PrefixedOp_i64_trunc_sat_f64_u:
+                break;
+
+                case PrefixedOp_memory_init:
+                case PrefixedOp_memory_copy:
+                case PrefixedOp_memory_fill:
+                case PrefixedOp_table_init:
+                case PrefixedOp_table_copy:
+                case PrefixedOp_table_fill:
+                stack_depth -= 3;
+                break;
+
+                case PrefixedOp_data_drop:
+                case PrefixedOp_elem_drop:
+                break;
+
+                case PrefixedOp_table_grow:
+                stack_depth -= 1;
+                break;
+
+                case PrefixedOp_table_size:
+                stack_depth += 1;
+                break;
+            }
+        }
+
+        switch (opcode) {
+            case Op_block:
+            case Op_loop:
+            case Op_if:
+            {
+                label_i += 1;
+                max_label_depth = (label_i > max_label_depth) ? label_i : max_label_depth;
+                struct Label *label = &labels[label_i];
+                int64_t block_type = read64_ileb128(mod_ptr, code_i);
+                struct TypeInfo type_info;
+                if (block_type < 0) {
+                    type_info.param_count = 0;
+                    type_info.result_count = block_type != -0x40;
+                } else {
+                    type_info = vm->types[block_type];
+                }
+                label->kind = opcode;
+                label->stack_depth = stack_depth - type_info.param_count;
+                label->type_info = type_info;
+                label->ref_list = UINT32_MAX;
+                switch (opcode) {
+                    case Op_loop:
+                    label->extra.loop_pc = *pc;
+                    break;
+
+                    case Op_if:
+                    opcodes[pc->opcode] = Op_i32_eqz;
+                    opcodes[pc->opcode + 1] = Op_br_if;
+                    pc->opcode += 2;
+                    operands[pc->operand] = type_info.param_count;
+                    label->extra.else_ref = pc->operand + 1;
+                    pc->operand += 3;
+                    break;
+
+                    default:
+                    break;
+                }
+            }
+            break;
+
+            case Op_else:
+            {
+                struct Label * label = &labels[label_i];
+                assert(label->kind == Op_if);
+                label->kind = opcode;
+                uint32_t operand_count = Label_operandCount(label);
+                opcodes[pc->opcode] = Op_br;
+                pc->opcode += 1;
+                operands[pc->operand] = operand_count |
+                    (stack_depth - operand_count - label->stack_depth) << 1;
+                operands[pc->operand + 1] = label->ref_list;
+                label->ref_list = pc->operand + 1;
+                pc->operand += 3;
+                operands[label->extra.else_ref] = pc->opcode;
+                operands[label->extra.else_ref + 1] = pc->operand;
+                assert(stack_depth > UINT32_MAX / 4 ||
+                    stack_depth - label->type_info.result_count == label->stack_depth);
+                stack_depth = label->stack_depth + label->type_info.param_count;
+            };
+            break;
+
+            case Op_end:
+            {
+                struct Label * label = &labels[label_i];
+                struct ProgramCounter *target_pc = (label->kind == Op_loop) ? &label->extra.loop_pc : pc;
+                if (label->kind == Op_if) {
+                    operands[label->extra.else_ref] = target_pc->opcode;
+                    operands[label->extra.else_ref + 1] = target_pc->operand;
+                }
+                uint32_t ref = label->ref_list;
+                while (ref != UINT32_MAX) {
+                    uint32_t next_ref = operands[ref];
+                    operands[ref] = target_pc->opcode;
+                    operands[ref + 1] = target_pc->operand;
+                    ref = next_ref;
+                }
+                uint32_t result_stack_depth = label->stack_depth + label->type_info.result_count;
+                assert((stack_depth > UINT32_MAX / 4) || (stack_depth == result_stack_depth));
+                stack_depth = result_stack_depth;
+                if (label_i == 0) {
+                    opcodes[pc->opcode] = Op_return;
+                    pc->opcode += 1;
+                    uint32_t operand_count = Label_operandCount(&labels[0]);
+                    operands[pc->operand] = operand_count | (2 + operand_count) << 1;
+                    stack_depth -= operand_count;
+                    assert(stack_depth == labels[0].stack_depth);
+                    operands[pc->operand + 1] = stack_depth;
+                    pc->operand += 2;
+                    return;
+                }
+                label_i -= 1;
+            }
+            break;
+
+            case Op_br:
+            case Op_br_if:
+            {
+                uint32_t label_idx = read32_uleb128(mod_ptr, code_i);
+                struct Label * label = &labels[label_i - label_idx];
+                uint32_t operand_count = Label_operandCount(label);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = operand_count |
+                    (stack_depth - operand_count - label->stack_depth) << 1;
+                operands[pc->operand + 1] = label->ref_list;
+                label->ref_list = pc->operand + 1;
+                pc->operand += 3;
+            }
+            break;
+
+            case Op_br_table:
+            {
+                uint32_t labels_len = read32_uleb128(mod_ptr, code_i);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = labels_len;
+                pc->operand += 1;
+                for (uint32_t i = 0; i <= labels_len; i += 1) {
+                    uint32_t label_idx = read32_uleb128(mod_ptr, code_i);
+                    struct Label * label = &labels[label_i - label_idx];
+                    uint32_t operand_count = Label_operandCount(label);
+                    operands[pc->operand] = operand_count |
+                        (stack_depth - operand_count - label->stack_depth) << 1;
+                    operands[pc->operand + 1] = label->ref_list;
+                    label->ref_list = pc->operand + 1;
+                    pc->operand += 3;
+                }
+            }
+            break;
+
+            case Op_call:
+            {
+                uint32_t fn_id = read32_uleb128(mod_ptr, code_i);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = fn_id;
+                pc->operand += 1;
+                struct TypeInfo type_info = (fn_id < vm->imports_len) ?
+                    vm->imports[fn_id].type_info :
+                    vm->functions[fn_id - vm->imports_len].type_info;
+                stack_depth = stack_depth - type_info.param_count + type_info.result_count;
+            }
+            break;
+
+            case Op_call_indirect:
+            {
+                uint32_t type_idx = read32_uleb128(mod_ptr, code_i);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                if (read32_uleb128(mod_ptr, code_i) != 0) panic("expected zero");
+                struct TypeInfo info = vm->types[type_idx];
+                stack_depth = stack_depth - info.param_count + info.result_count;
+            }
+            break;
+
+            case Op_return:
+            {
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                uint32_t operand_count = Label_operandCount(&labels[0]);
+                operands[pc->operand] = operand_count |
+                    (2 + stack_depth - labels[0].stack_depth) << 1;
+                stack_depth -= operand_count;
+                operands[pc->operand + 1] = stack_depth;
+                pc->operand += 2;
+            }
+            break;
+
+            case Op_local_get:
+            case Op_local_set:
+            case Op_local_tee:
+            {
+                uint32_t local_idx = read32_uleb128(mod_ptr, code_i);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = initial_stack_depth - local_idx;
+                pc->operand += 1;
+            }
+            break;
+
+            case Op_global_get:
+            case Op_global_set:
+            {
+                uint32_t global_idx = read32_uleb128(mod_ptr, code_i);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = global_idx;
+                pc->operand += 1;
+            }
+            break;
+
+            case Op_i32_load:
+            case Op_i64_load:
+            case Op_f32_load:
+            case Op_f64_load:
+            case Op_i32_load8_s:
+            case Op_i32_load8_u:
+            case Op_i32_load16_s:
+            case Op_i32_load16_u:
+            case Op_i64_load8_s:
+            case Op_i64_load8_u:
+            case Op_i64_load16_s:
+            case Op_i64_load16_u:
+            case Op_i64_load32_s:
+            case Op_i64_load32_u:
+            case Op_i32_store:
+            case Op_i64_store:
+            case Op_f32_store:
+            case Op_f64_store:
+            case Op_i32_store8:
+            case Op_i32_store16:
+            case Op_i64_store8:
+            case Op_i64_store16:
+            case Op_i64_store32:
+            {
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                read32_uleb128(mod_ptr, code_i);
+                operands[pc->operand] = read32_uleb128(mod_ptr, code_i);
+                offset_counts[operands[pc->operand] != 0] += 1;
+                max_offset = (operands[pc->operand] > max_offset) ?
+                    operands[pc->operand] : max_offset;
+                pc->operand += 1;
+            }
+            break;
+
+            case Op_memory_size:
+            case Op_memory_grow:
+            {
+                assert(mod_ptr[*code_i] == 0);
+                *code_i += 1;
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+            }
+            break;
+
+            case Op_i32_const:
+            {
+                uint32_t x = read32_ileb128(mod_ptr, code_i);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = x;
+                pc->operand += 1;
+            }
+            break;
+
+            case Op_i64_const:
+            {
+                uint64_t x = read64_ileb128(mod_ptr, code_i);
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = x & UINT32_MAX;
+                operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
+                pc->operand += 2;
+            }
+            break;
+
+            case Op_f32_const:
+            {
+                uint32_t x;
+                memcpy(&x, mod_ptr + *code_i, 4);
+                *code_i += 4;
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = x;
+                pc->operand += 1;
+            }
+            break;
+
+            case Op_f64_const:
+            {
+                uint64_t x;
+                memcpy(&x, mod_ptr + *code_i, 8);
+                *code_i += 8;
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = x & UINT32_MAX;
+                operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
+                pc->operand += 2;
+            }
+            break;
+
+            case Op_prefixed:
+            switch (prefixed_opcode) {
+                case PrefixedOp_i32_trunc_sat_f32_s:
+                case PrefixedOp_i32_trunc_sat_f32_u:
+                case PrefixedOp_i32_trunc_sat_f64_s:
+                case PrefixedOp_i32_trunc_sat_f64_u:
+                case PrefixedOp_i64_trunc_sat_f32_s:
+                case PrefixedOp_i64_trunc_sat_f32_u:
+                case PrefixedOp_i64_trunc_sat_f64_s:
+                case PrefixedOp_i64_trunc_sat_f64_u:
+                opcodes[pc->opcode] = opcode;
+                opcodes[pc->opcode + 1] = prefixed_opcode;
+                pc->opcode += 2;
+                break;
+
+                case PrefixedOp_memory_copy:
+                assert(mod_ptr[*code_i] == 0 && mod_ptr[*code_i + 1] == 0);
+                *code_i += 2;
+                opcodes[pc->opcode] = opcode;
+                opcodes[pc->opcode + 1] = prefixed_opcode;
+                pc->opcode += 2;
+                break;
+
+                case PrefixedOp_memory_fill:
+                assert(mod_ptr[*code_i] == 0);
+                *code_i += 1;
+                opcodes[pc->opcode] = opcode;
+                opcodes[pc->opcode + 1] = prefixed_opcode;
+                pc->opcode += 2;
+                break;
+
+                default: panic("unreachable");
+            }
+            break;
+
+            default:
+            opcodes[pc->opcode] = opcode;
+            pc->opcode += 1;
+            break;
+        }
+
+        switch (opcode) {
+            case Op_unreachable:
+            case Op_return:
+            case Op_br:
+            case Op_br_table:
+            stack_depth = UINT32_MAX / 2;
+            break;
+
+            default:
+            break;
+        }
+    }
+}
+
 
 int main(int argc, char **argv) {
     char *memory = mmap( NULL, max_memory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -366,7 +1043,7 @@ int main(int argc, char **argv) {
     add_preopen(4, "/cache", cache_dir);
     add_preopen(5, "/lib", zig_lib_dir);
 
-    ssize_t i = 0;
+    uint32_t i = 0;
 
     if (mod.ptr[0] != 0 || mod.ptr[1] != 'a' || mod.ptr[2] != 's' || mod.ptr[3] != 'm') {
         panic("bad magic");
@@ -411,9 +1088,10 @@ int main(int argc, char **argv) {
 
     // Count the imported functions so we can correct function references.
     struct Import *imports;
+    uint32_t imports_len;
     {
         i = section_starts[Section_import];
-        uint32_t imports_len = read32_uleb128(mod.ptr, &i);
+        imports_len = read32_uleb128(mod.ptr, &i);
         imports = arena_alloc(sizeof(struct Import) * imports_len);
         for (size_t imp_i = 0; imp_i < imports_len; imp_i += 1) {
             struct Import *imp = &imports[imp_i];
@@ -421,7 +1099,7 @@ int main(int argc, char **argv) {
             imp->sym_name = read_name(mod.ptr, &i);
             uint32_t desc = read32_uleb128(mod.ptr, &i);
             if (desc != 0) panic("external kind not function");
-            imp->type_idx = read32_uleb128(mod.ptr, &i);
+            imp->type_info = types[read32_uleb128(mod.ptr, &i)];
         }
     }
 
@@ -445,11 +1123,12 @@ int main(int argc, char **argv) {
 
     // Map function indexes to offsets into the module and type index.
     struct Function *functions;
+    uint32_t functions_len;
     {
         i = section_starts[Section_function];
-        uint32_t funcs_len = read32_uleb128(mod.ptr, &i);
-        functions = arena_alloc(sizeof(struct Function) * funcs_len);
-        for (size_t func_i = 0; func_i < funcs_len; func_i += 1) {
+        functions_len = read32_uleb128(mod.ptr, &i);
+        functions = arena_alloc(sizeof(struct Function) * functions_len);
+        for (size_t func_i = 0; func_i < functions_len; func_i += 1) {
             struct Function *func = &functions[func_i];
             func->type_info = types[read32_uleb128(mod.ptr, &i)];
         }
@@ -528,11 +1207,69 @@ int main(int argc, char **argv) {
             i += 1;
             uint32_t elem_count = read32_uleb128(mod.ptr, &i);
 
-            table = arena_alloc(maximum);
+            table = arena_alloc(sizeof(uint32_t) * maximum);
             memset(table, 0, maximum);
 
             for (uint32_t elem_i = 0; elem_i < elem_count; elem_i += 1) {
                 table[elem_i + offset] = read32_uleb128(mod.ptr, &i);
+            }
+        }
+    }
+
+    struct VirtualMachine vm;
+    vm.stack = arena_alloc(sizeof(uint64_t) * 10000000),
+    vm.mod_ptr = mod.ptr;
+    vm.opcodes = arena_alloc(2000000);
+    vm.operands = arena_alloc(sizeof(uint32_t) * 2000000);
+    vm.stack_top = 0;
+    vm.functions = functions;
+    vm.types = types;
+    vm.globals = globals;
+    vm.memory = memory;
+    vm.memory_len = memory_len;
+    vm.imports = imports;
+    vm.imports_len = imports_len;
+    vm.args = argv + vm_argv_start;
+    vm.table = table;
+
+    {
+        uint32_t code_i = section_starts[Section_code];
+        uint32_t codes_len = read32_uleb128(mod.ptr, &code_i);
+        if (codes_len != functions_len) panic("code/function length mismatch");
+        struct ProgramCounter pc;
+        pc.opcode = 0;
+        pc.operand = 0;
+        for (uint32_t func_i = 0; func_i < functions_len; func_i += 1) {
+            struct Function *func = &functions[func_i];
+            uint32_t size = read32_uleb128(mod.ptr, &code_i);
+            uint32_t code_begin = code_i;
+
+            func->locals_count = 0;
+            uint32_t local_sets_count = read32_uleb128(mod.ptr, &code_i);
+            for (; local_sets_count > 0; local_sets_count -= 1) {
+                uint32_t current_count = read32_uleb128(mod.ptr, &code_i);
+                uint32_t local_type = read32_uleb128(mod.ptr, &code_i);
+                func->locals_count += current_count;
+            }
+
+            func->pc = pc;
+            vm_decodeCode(&vm, func, &code_i, &pc);
+            if (code_i != code_begin + size) panic("bad code size");
+        }
+
+        uint64_t opcode_counts[0x100];
+        memset(opcode_counts, 0, 0x100);
+        uint64_t prefixed_opcode_counts[0x100];
+        memset(prefixed_opcode_counts, 0, 0x100);
+        bool is_prefixed = false;
+        for (uint32_t opcode_i = 0; opcode_i < pc.opcode; opcode_i += 1) {
+            uint8_t opcode = vm.opcodes[opcode_i];
+            if (!is_prefixed) {
+                opcode_counts[opcode] += 1;
+                is_prefixed = opcode == Op_prefixed;
+            } else {
+                prefixed_opcode_counts[opcode] += 1;
+                is_prefixed = false;
             }
         }
     }
