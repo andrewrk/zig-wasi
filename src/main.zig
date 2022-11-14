@@ -1,5 +1,5 @@
 const std = @import("std");
-const process = std.process;
+const cReader = @import("io/c_reader.zig").cReader;
 const assert = std.debug.assert;
 const fs = std.fs;
 const mem = std.mem;
@@ -7,11 +7,15 @@ const wasm = std.wasm;
 const wasi = std.os.wasi;
 const os = std.os;
 const math = std.math;
+const leb = std.leb;
 const decode_log = std.log.scoped(.decode);
 const stats_log = std.log.scoped(.stats);
 const trace_log = std.log.scoped(.trace);
 const cpu_log = std.log.scoped(.cpu);
 const func_log = std.log.scoped(.func);
+
+const SEEK = enum(c_int) { SET, CUR, END };
+pub extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: SEEK) c_int;
 
 pub fn log(
     comptime level: std.log.Level,
@@ -30,12 +34,18 @@ pub fn log(
 
 const max_memory = 3 * 1024 * 1024 * 1024; // 3 GiB
 
-pub fn main() !void {
-    var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+pub export fn main(argc: c_int, argv: [*c][*:0]u8) c_int {
+    main2(argv[0..@intCast(usize, argc)]) catch |e| std.debug.print("{s}\n", .{@errorName(e)});
+    return 1;
+}
+
+fn main2(args: []const [*:0]const u8) !void {
+    var arena_instance = std.heap.ArenaAllocator.init(std.heap.raw_c_allocator);
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
 
-    const memory = try os.mmap(
+    var vm: VirtualMachine = undefined;
+    vm.memory = try os.mmap(
         null,
         max_memory,
         os.PROT.READ | os.PROT.WRITE,
@@ -44,18 +54,13 @@ pub fn main() !void {
         0,
     );
 
-    const args = try process.argsAlloc(arena);
-
     const zig_lib_dir_path = args[1];
     const wasm_file = args[2];
-    const vm_args = args[2..];
-
-    const max_size = 50 * 1024 * 1024;
-    const module_bytes = try fs.cwd().readFileAlloc(arena, wasm_file, max_size);
+    vm.args = args[2..];
 
     const cwd = try fs.cwd().openDir(".", .{});
     const cache_dir = try cwd.makeOpenPath("zig1-cache", .{});
-    const zig_lib_dir = try cwd.openDir(zig_lib_dir_path, .{});
+    const zig_lib_dir = try cwd.openDirZ(zig_lib_dir_path, .{}, false);
 
     addPreopen(0, "stdin", os.STDIN_FILENO);
     addPreopen(1, "stdout", os.STDOUT_FILENO);
@@ -64,249 +69,272 @@ pub fn main() !void {
     addPreopen(4, "/cache", cache_dir.fd);
     addPreopen(5, "/lib", zig_lib_dir.fd);
 
-    var i: u32 = 0;
-
-    const magic = module_bytes[i..][0..4];
-    i += 4;
-    if (!mem.eql(u8, magic, "\x00asm")) return error.NotWasm;
-
-    const version = mem.readIntLittle(u32, module_bytes[i..][0..4]);
-    i += 4;
-    if (version != 1) return error.BadWasmVersion;
-
-    var section_starts = [1]u32{0} ** section_count;
-
-    while (i < module_bytes.len) {
-        const section_id = @intToEnum(wasm.Section, module_bytes[i]);
-        i += 1;
-        const section_len = readVarInt(module_bytes, &i, u32);
-        section_starts[@enumToInt(section_id)] = i;
-        i += section_len;
-    }
-
-    // Map type indexes to offsets into the module.
-    const types = t: {
-        i = section_starts[@enumToInt(wasm.Section.type)];
-        const types_len = readVarInt(module_bytes, &i, u32);
-        const types = try arena.alloc(TypeInfo, types_len);
-        for (types) |*info| {
-            assert(module_bytes[i] == 0x60);
-            i += 1;
-            info.param_count = readVarInt(module_bytes, &i, u32);
-            var param_i: u32 = 0;
-            while (param_i < info.param_count) : (param_i += 1) _ = readVarInt(module_bytes, &i, i32);
-            info.result_count = readVarInt(module_bytes, &i, u32);
-            var result_i: u32 = 0;
-            while (result_i < info.result_count) : (result_i += 1) _ = readVarInt(module_bytes, &i, i32);
-        }
-        break :t types;
-    };
-
-    // Count the imported functions so we can correct function references.
-    const imports = i: {
-        i = section_starts[@enumToInt(wasm.Section.import)];
-        const imports_len = readVarInt(module_bytes, &i, u32);
-        const imports = try arena.alloc(Import, imports_len);
-        for (imports) |*imp| {
-            imp.mod_name = readName(module_bytes, &i);
-            imp.sym_name = readName(module_bytes, &i);
-            const desc = readVarInt(module_bytes, &i, wasm.ExternalKind);
-            switch (desc) {
-                .function => {
-                    imp.type_info = types[readVarInt(module_bytes, &i, u32)];
-                },
-                .table => unreachable,
-                .memory => unreachable,
-                .global => unreachable,
-            }
-        }
-        break :i imports;
-    };
-
-    // Find _start in the exports
-    const start_fn_idx = i: {
-        i = section_starts[@enumToInt(wasm.Section.@"export")];
-        var count = readVarInt(module_bytes, &i, u32);
-        while (count > 0) : (count -= 1) {
-            const name = readName(module_bytes, &i);
-            const desc = readVarInt(module_bytes, &i, wasm.ExternalKind);
-            const index = readVarInt(module_bytes, &i, u32);
-            if (mem.eql(u8, name, "_start") and desc == .function) {
-                break :i index;
-            }
-        }
-        return error.StartFunctionNotFound;
-    };
-
-    // Map function indexes to offsets into the module and type index.
-    const functions = f: {
-        i = section_starts[@enumToInt(wasm.Section.function)];
-        const funcs_len = readVarInt(module_bytes, &i, u32);
-        const functions = try arena.alloc(Function, funcs_len);
-        for (functions) |*func| func.type_info = types[readVarInt(module_bytes, &i, u32)];
-        break :f functions;
-    };
-
-    // Allocate and initialize globals.
-    const globals = g: {
-        i = section_starts[@enumToInt(wasm.Section.global)];
-        const globals_len = readVarInt(module_bytes, &i, u32);
-        const globals = try arena.alloc(u64, globals_len);
-        for (globals) |*global| {
-            const content_type = readVarInt(module_bytes, &i, wasm.Valtype);
-            const mutability = readVarInt(module_bytes, &i, Mutability);
-            assert(mutability == .@"var");
-            assert(content_type == .i32);
-            const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
-            i += 1;
-            assert(opcode == .i32_const);
-            const init = readVarInt(module_bytes, &i, i32);
-            global.* = @bitCast(u32, init);
-        }
-        break :g globals;
-    };
-
-    // Allocate and initialize memory.
-    const memory_len = m: {
-        i = section_starts[@enumToInt(wasm.Section.memory)];
-        const memories_len = readVarInt(module_bytes, &i, u32);
-        if (memories_len != 1) return error.UnexpectedMemoryCount;
-        const flags = readVarInt(module_bytes, &i, u32);
-        _ = flags;
-        const initial = readVarInt(module_bytes, &i, u32) * wasm.page_size;
-
-        i = section_starts[@enumToInt(wasm.Section.data)];
-        var datas_count = readVarInt(module_bytes, &i, u32);
-        while (datas_count > 0) : (datas_count -= 1) {
-            const mode = readVarInt(module_bytes, &i, u32);
-            assert(mode == 0);
-            const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
-            i += 1;
-            assert(opcode == .i32_const);
-            const offset = readVarInt(module_bytes, &i, u32);
-            const end = @intToEnum(wasm.Opcode, module_bytes[i]);
-            assert(end == .end);
-            i += 1;
-            const bytes_len = readVarInt(module_bytes, &i, u32);
-            mem.copy(u8, memory[offset..], module_bytes[i..][0..bytes_len]);
-            i += bytes_len;
-        }
-
-        break :m initial;
-    };
-
-    const table = t: {
-        i = section_starts[@enumToInt(wasm.Section.table)];
-        const table_count = readVarInt(module_bytes, &i, u32);
-        if (table_count == 0) break :t &[0]u32{};
-        if (table_count != 1) return error.ExpectedOneTableSection;
-        const element_type = readVarInt(module_bytes, &i, u32);
-        const has_max = readVarInt(module_bytes, &i, u32);
-        assert(has_max == 1);
-        const initial = readVarInt(module_bytes, &i, u32);
-        const maximum = readVarInt(module_bytes, &i, u32);
-        cpu_log.debug("table element_type={x} initial={d} maximum={d}", .{
-            element_type, initial, maximum,
-        });
-
-        i = section_starts[@enumToInt(wasm.Section.element)];
-        const element_section_count = readVarInt(module_bytes, &i, u32);
-        if (element_section_count != 1) return error.ExpectedOneElementSection;
-        const flags = readVarInt(module_bytes, &i, u32);
-        cpu_log.debug("flags={x}", .{flags});
-        const opcode = @intToEnum(wasm.Opcode, module_bytes[i]);
-        i += 1;
-        assert(opcode == .i32_const);
-        const offset = readVarInt(module_bytes, &i, u32);
-        const end = @intToEnum(wasm.Opcode, module_bytes[i]);
-        assert(end == .end);
-        i += 1;
-        const elem_count = readVarInt(module_bytes, &i, u32);
-
-        cpu_log.debug("elem offset={d} count={d}", .{ offset, elem_count });
-
-        const table = try arena.alloc(u32, maximum);
-        mem.set(u32, table, 0);
-
-        var elem_i: u32 = 0;
-        while (elem_i < elem_count) : (elem_i += 1) {
-            table[elem_i + offset] = readVarInt(module_bytes, &i, u32);
-        }
-        break :t table;
-    };
-
-    var vm: VirtualMachine = .{
-        .stack = try arena.alloc(u64, 10000000),
-        .module_bytes = module_bytes,
-        .opcodes = try arena.alloc(u8, 2000000),
-        .operands = try arena.alloc(u32, 2000000),
-        .stack_top = 0,
-        .pc = undefined,
-        .functions = functions,
-        .types = types,
-        .globals = globals,
-        .memory = memory,
-        .memory_len = memory_len,
-        .imports = imports,
-        .args = vm_args,
-        .table = table,
-    };
-
+    var start_fn_idx: u32 = undefined;
     {
-        var code_i: u32 = section_starts[@enumToInt(wasm.Section.code)];
-        const codes_len = readVarInt(module_bytes, &code_i, u32);
-        assert(codes_len == functions.len);
-        var pc = ProgramCounter{ .opcode = 0, .operand = 0 };
-        for (functions) |*func| {
-            const size = readVarInt(module_bytes, &code_i, u32);
-            const code_begin = code_i;
+        const module_file = std.c.fopen(wasm_file, "rb") orelse return error.FileNotFound;
+        defer _ = std.c.fclose(module_file);
+        const module_reader = cReader(module_file);
 
-            func.locals_count = 0;
-            var local_sets_count = readVarInt(module_bytes, &code_i, u32);
-            while (local_sets_count > 0) : (local_sets_count -= 1) {
-                const current_count = readVarInt(module_bytes, &code_i, u32);
-                const local_type = readVarInt(module_bytes, &code_i, u32);
-                _ = local_type;
-                func.locals_count += current_count;
+        var magic: [4]u8 = undefined;
+        try module_reader.readNoEof(&magic);
+        if (!mem.eql(u8, &magic, "\x00asm")) return error.NotWasm;
+
+        const version = try module_reader.readIntLittle(u32);
+        if (version != 1) return error.BadWasmVersion;
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .type)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        vm.types = try arena.alloc(TypeInfo, try leb.readULEB128(u32, module_reader));
+        for (vm.types) |*@"type"| {
+            assert(try leb.readILEB128(i33, module_reader) == -0x20);
+
+            @"type".param_count = try leb.readULEB128(u32, module_reader);
+            var param_index: u32 = 0;
+            while (param_index < @"type".param_count) : (param_index += 1)
+                _ = try leb.readILEB128(i33, module_reader);
+
+            @"type".result_count = try leb.readULEB128(u32, module_reader);
+            var result_index: u32 = 0;
+            while (result_index < @"type".result_count) : (result_index += 1)
+                _ = try leb.readILEB128(i33, module_reader);
+        }
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .import)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        {
+            vm.imports = try arena.alloc(Import, try leb.readULEB128(u32, module_reader));
+
+            comptime var max_str_len: usize = 0;
+            inline for (.{ Import.Mod, Import.Name }) |Enum| {
+                inline for (comptime std.meta.fieldNames(Enum)) |str| {
+                    max_str_len = @max(str.len, max_str_len);
+                }
+            }
+            var str_buf: [max_str_len]u8 = undefined;
+
+            for (vm.imports) |*import| {
+                const mod = str_buf[0..try leb.readULEB128(u32, module_reader)];
+                try module_reader.readNoEof(mod);
+                import.mod = std.meta.stringToEnum(Import.Mod, mod).?;
+
+                const name = str_buf[0..try leb.readULEB128(u32, module_reader)];
+                try module_reader.readNoEof(name);
+                import.name = std.meta.stringToEnum(Import.Name, name).?;
+
+                const kind = @intToEnum(wasm.ExternalKind, try module_reader.readByte());
+                const idx = try leb.readULEB128(u32, module_reader);
+                switch (kind) {
+                    .function => import.type_info = vm.types[idx],
+                    .table, .memory, .global => unreachable,
+                }
+            }
+        }
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .function)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        vm.functions = try arena.alloc(Function, try leb.readULEB128(u32, module_reader));
+        for (vm.functions) |*function|
+            function.type_info = vm.types[try leb.readULEB128(u32, module_reader)];
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .table)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        {
+            const table_count = try leb.readULEB128(u32, module_reader);
+            if (table_count == 1) {
+                assert(try leb.readILEB128(i33, module_reader) == -0x10);
+                const limits_kind = try module_reader.readByte();
+                vm.table = try arena.alloc(u32, try leb.readULEB128(u32, module_reader));
+                switch (limits_kind) {
+                    0x00 => {},
+                    0x01 => _ = try leb.readULEB128(u32, module_reader),
+                    else => unreachable,
+                }
+            } else assert(table_count == 0);
+        }
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .memory)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        {
+            assert(try leb.readULEB128(u32, module_reader) == 1);
+            const limits_kind = try module_reader.readByte();
+            vm.memory_len = try leb.readULEB128(u32, module_reader) * wasm.page_size;
+            switch (limits_kind) {
+                0x00 => {},
+                0x01 => _ = try leb.readULEB128(u32, module_reader),
+                else => unreachable,
+            }
+        }
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .global)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        vm.globals = try arena.alloc(u64, try leb.readULEB128(u32, module_reader));
+        for (vm.globals) |*global| {
+            assert(try leb.readILEB128(i33, module_reader) == -1);
+            _ = @intToEnum(Mutability, try module_reader.readByte());
+            assert(@intToEnum(wasm.Opcode, try module_reader.readByte()) == .i32_const);
+            global.* = @bitCast(u32, try leb.readILEB128(i32, module_reader));
+            assert(@intToEnum(wasm.Opcode, try module_reader.readByte()) == .end);
+        }
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .@"export")
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        {
+            var found_start_fn = false;
+            const start_name = "_start";
+            var str_buf: [start_name.len]u8 = undefined;
+
+            var export_count = try leb.readULEB128(u32, module_reader);
+            while (export_count > 0) : (export_count -= 1) {
+                const name_len = try leb.readULEB128(u32, module_reader);
+                var is_start_fn = false;
+                if (name_len == start_name.len) {
+                    try module_reader.readNoEof(&str_buf);
+                    is_start_fn = mem.eql(u8, &str_buf, start_name);
+                    found_start_fn = found_start_fn or is_start_fn;
+                } else assert(fseek(module_file, @intCast(c_long, name_len), .CUR) == 0);
+
+                const kind = @intToEnum(wasm.ExternalKind, try module_reader.readByte());
+                const idx = try leb.readULEB128(u32, module_reader);
+                switch (kind) {
+                    .function => if (is_start_fn) {
+                        start_fn_idx = idx;
+                    },
+                    .table, .memory, .global => {},
+                }
+            }
+            assert(found_start_fn);
+        }
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .element)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        {
+            var segment_count = try leb.readULEB128(u32, module_reader);
+            while (segment_count > 0) : (segment_count -= 1) {
+                const flags = @intCast(u3, try leb.readULEB128(u32, module_reader));
+                assert(flags & 0b001 == 0b000);
+                if (flags & 0b010 == 0b010) assert(try leb.readULEB128(u32, module_reader) == 0);
+
+                assert(@intToEnum(wasm.Opcode, try module_reader.readByte()) == .i32_const);
+                var offset = @bitCast(u32, try leb.readILEB128(i32, module_reader));
+                assert(@intToEnum(wasm.Opcode, try module_reader.readByte()) == .end);
+
+                const element_type = if (flags & 0b110 != 0b110) idx: {
+                    if (flags & 0b010 == 0b010) assert(try module_reader.readByte() == 0x00);
+                    break :idx -0x10;
+                } else try leb.readILEB128(i33, module_reader);
+                assert(element_type == -0x10);
+
+                var element_count = try leb.readULEB128(u32, module_reader);
+                while (element_count > 0) : ({
+                    offset += 1;
+                    element_count -= 1;
+                }) {
+                    if (flags & 0b010 == 0b010)
+                        assert(try module_reader.readByte() == 0xD2);
+                    vm.table[offset] = try leb.readULEB128(u32, module_reader);
+                    if (flags & 0b010 == 0b010)
+                        assert(@intToEnum(wasm.Opcode, try module_reader.readByte()) == .end);
+                }
+            }
+        }
+
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .code)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        {
+            vm.opcodes = try arena.alloc(u8, 2000000);
+            vm.operands = try arena.alloc(u32, 2000000);
+
+            assert(try leb.readULEB128(u32, module_reader) == vm.functions.len);
+            var pc = ProgramCounter{ .opcode = 0, .operand = 0 };
+            for (vm.functions) |*function| {
+                _ = try leb.readULEB128(u32, module_reader);
+
+                function.locals_count = 0;
+                var local_sets_count = try leb.readULEB128(u32, module_reader);
+                while (local_sets_count > 0) : (local_sets_count -= 1) {
+                    const set_count = try leb.readULEB128(u32, module_reader);
+                    const local_type = try leb.readILEB128(i33, module_reader);
+                    _ = local_type;
+                    function.locals_count += set_count;
+                }
+
+                function.entry_pc = pc;
+                try vm.decodeCode(module_reader, function, &pc);
             }
 
-            func.pc = pc;
-            vm.decodeCode(func, &code_i, &pc);
-            assert(code_i == code_begin + size);
+            var opcode_counts = [1]u64{0} ** 0x100;
+            var prefixed_opcode_counts = [1]u64{0} ** 0x100;
+            var is_prefixed = false;
+            for (vm.opcodes[0..pc.opcode]) |opcode| {
+                if (!is_prefixed) {
+                    opcode_counts[opcode] += 1;
+                    is_prefixed = @intToEnum(wasm.Opcode, opcode) == .prefixed;
+                } else {
+                    prefixed_opcode_counts[opcode] += 1;
+                    is_prefixed = false;
+                }
+            }
+
+            stats_log.debug("{} opcodes", .{pc.opcode});
+            stats_log.debug("{} operands", .{pc.operand});
+            for (opcode_counts) |opcode_count, opcode| {
+                if (opcode_count == 0) continue;
+                stats_log.debug("{} {s}", .{ opcode_count, @tagName(@intToEnum(wasm.Opcode, opcode)) });
+            }
+            for (prefixed_opcode_counts) |prefixed_opcode_count, prefixed_opcode| {
+                if (prefixed_opcode_count == 0) continue;
+                stats_log.debug("{} {s}", .{
+                    prefixed_opcode_count,
+                    @tagName(@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)),
+                });
+            }
+            stats_log.debug("{} zero offsets", .{offset_counts[0]});
+            stats_log.debug("{} non-zero offsets", .{offset_counts[1]});
+            stats_log.debug("{} max offset", .{max_offset});
+            stats_log.debug("{} max label depth", .{max_label_depth});
         }
 
-        var opcode_counts = [1]u64{0} ** 0x100;
-        var prefixed_opcode_counts = [1]u64{0} ** 0x100;
-        var is_prefixed = false;
-        for (vm.opcodes[0..pc.opcode]) |opcode| {
-            if (!is_prefixed) {
-                opcode_counts[opcode] += 1;
-                is_prefixed = @intToEnum(wasm.Opcode, opcode) == .prefixed;
-            } else {
-                prefixed_opcode_counts[opcode] += 1;
-                is_prefixed = false;
+        while (@intToEnum(wasm.Section, try module_reader.readByte()) != .data)
+            assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
+        _ = try leb.readULEB128(u32, module_reader);
+
+        {
+            var segment_count = try leb.readULEB128(u32, module_reader);
+            while (segment_count > 0) : (segment_count -= 1) {
+                const flags = @intCast(u2, try leb.readULEB128(u32, module_reader));
+                assert(flags & 0b001 == 0b000);
+                if (flags & 0b010 == 0b010) assert(try leb.readULEB128(u32, module_reader) == 0);
+
+                assert(@intToEnum(wasm.Opcode, try module_reader.readByte()) == .i32_const);
+                const offset = @bitCast(u32, try leb.readILEB128(i32, module_reader));
+                assert(@intToEnum(wasm.Opcode, try module_reader.readByte()) == .end);
+
+                const length = try leb.readULEB128(u32, module_reader);
+                try module_reader.readNoEof(vm.memory[offset..][0..length]);
             }
         }
-
-        stats_log.debug("{} opcodes", .{pc.opcode});
-        stats_log.debug("{} operands", .{pc.operand});
-        for (opcode_counts) |opcode_count, opcode| {
-            if (opcode_count == 0) continue;
-            stats_log.debug("{} {s}", .{ opcode_count, @tagName(@intToEnum(wasm.Opcode, opcode)) });
-        }
-        for (prefixed_opcode_counts) |prefixed_opcode_count, prefixed_opcode| {
-            if (prefixed_opcode_count == 0) continue;
-            stats_log.debug("{} {s}", .{
-                prefixed_opcode_count,
-                @tagName(@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)),
-            });
-        }
-        stats_log.debug("{} zero offsets", .{offset_counts[0]});
-        stats_log.debug("{} non-zero offsets", .{offset_counts[1]});
-        stats_log.debug("{} max offset", .{max_offset});
-        stats_log.debug("{} max label depth", .{max_label_depth});
     }
 
+    vm.stack = try arena.alloc(u64, 10000000);
+    vm.stack_top = 0;
     vm.call(start_fn_idx);
     vm.run();
 }
@@ -329,15 +357,47 @@ const TypeInfo = struct {
 };
 
 const Function = struct {
-    /// Index to start of code in opcodes/operands.
-    pc: ProgramCounter,
+    entry_pc: ProgramCounter,
     locals_count: u32,
     type_info: TypeInfo,
 };
 
 const Import = struct {
-    sym_name: []const u8,
-    mod_name: []const u8,
+    const Mod = enum {
+        wasi_snapshot_preview1,
+    };
+    const Name = enum {
+        args_get,
+        args_sizes_get,
+        clock_time_get,
+        debug,
+        debug_slice,
+        environ_get,
+        environ_sizes_get,
+        fd_close,
+        fd_fdstat_get,
+        fd_filestat_get,
+        fd_filestat_set_size,
+        fd_filestat_set_times,
+        fd_pread,
+        fd_prestat_dir_name,
+        fd_prestat_get,
+        fd_pwrite,
+        fd_read,
+        fd_readdir,
+        fd_write,
+        path_create_directory,
+        path_filestat_get,
+        path_open,
+        path_remove_directory,
+        path_rename,
+        path_unlink_file,
+        proc_exit,
+        random_get,
+    };
+
+    mod: Mod,
+    name: Name,
     type_info: TypeInfo,
 };
 
@@ -346,7 +406,7 @@ const Label = struct {
     stack_depth: u32,
     type_info: TypeInfo,
     // this is a maxInt terminated linked list that is stored in the operands array
-    ref_list: u32 = std.math.maxInt(u32),
+    ref_list: u32 = math.maxInt(u32),
     extra: union {
         loop_pc: ProgramCounter,
         else_ref: u32,
@@ -363,33 +423,28 @@ const VirtualMachine = struct {
     stack_top: u32,
     pc: ProgramCounter,
     memory_len: u32,
-    module_bytes: []const u8,
     opcodes: []u8,
     operands: []u32,
-    functions: []const Function,
-    /// Type index to start of type in module_bytes.
-    types: []const TypeInfo,
+    functions: []Function,
+    types: []TypeInfo,
     globals: []u64,
     memory: []u8,
-    imports: []const Import,
-    args: []const []const u8,
-    table: []const u32,
+    imports: []Import,
+    args: []const [*:0]const u8,
+    table: []u32,
 
-    fn decodeCode(vm: *VirtualMachine, func: *Function, code_i: *u32, pc: *ProgramCounter) void {
-        const module_bytes = vm.module_bytes;
+    fn decodeCode(vm: *VirtualMachine, reader: anytype, function: *Function, pc: *ProgramCounter) !void {
         const opcodes = vm.opcodes;
         const operands = vm.operands;
-        var stack_depth = func.type_info.param_count + func.locals_count + 2;
+        var stack_depth = function.type_info.param_count + function.locals_count + 2;
         var label_i: u32 = 0;
         labels[label_i] = .{
             .kind = .block,
             .stack_depth = stack_depth,
-            .type_info = func.type_info,
+            .type_info = function.type_info,
         };
         while (true) {
-            const opcode = module_bytes[code_i.*];
-            code_i.* += 1;
-
+            const opcode = try reader.readByte();
             decode_log.debug("stack_depth = {}, opcode = {s}", .{
                 stack_depth,
                 @tagName(@intToEnum(wasm.Opcode, opcode)),
@@ -589,7 +644,7 @@ const VirtualMachine = struct {
                 => stack_depth - 2 + 1,
 
                 .prefixed => prefixed: {
-                    prefixed_opcode = @intCast(u8, readVarInt(module_bytes, code_i, u32));
+                    prefixed_opcode = @intCast(u8, try leb.readULEB128(u32, reader));
                     break :prefixed switch (@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)) {
                         .i32_trunc_sat_f32_s,
                         .i32_trunc_sat_f32_u,
@@ -629,7 +684,7 @@ const VirtualMachine = struct {
                     label_i += 1;
                     max_label_depth = @max(label_i, max_label_depth);
                     const label = &labels[label_i];
-                    const block_type = readVarInt(module_bytes, code_i, i33);
+                    const block_type = try leb.readILEB128(i33, reader);
                     const type_info = if (block_type < 0) TypeInfo{
                         .param_count = 0,
                         .result_count = @boolToInt(block_type != -0x40),
@@ -669,7 +724,7 @@ const VirtualMachine = struct {
                     operands[label.extra.else_ref] = pc.opcode;
                     operands[label.extra.else_ref + 1] = pc.operand;
                     label.extra = undefined;
-                    assert(stack_depth > std.math.maxInt(u32) / 4 or
+                    assert(stack_depth > math.maxInt(u32) / 4 or
                         stack_depth - label.type_info.result_count == label.stack_depth);
                     stack_depth = label.stack_depth + label.type_info.param_count;
                 },
@@ -682,14 +737,14 @@ const VirtualMachine = struct {
                         label.extra = undefined;
                     }
                     var ref = label.ref_list;
-                    while (ref != std.math.maxInt(u32)) {
+                    while (ref != math.maxInt(u32)) {
                         const next_ref = operands[ref];
                         operands[ref] = target_pc.opcode;
                         operands[ref + 1] = target_pc.operand;
                         ref = next_ref;
                     }
                     const result_stack_depth = label.stack_depth + label.type_info.result_count;
-                    assert(stack_depth > std.math.maxInt(u32) / 4 or stack_depth == result_stack_depth);
+                    assert(stack_depth > math.maxInt(u32) / 4 or stack_depth == result_stack_depth);
                     stack_depth = result_stack_depth;
                     if (label_i == 0) {
                         opcodes[pc.opcode] = @enumToInt(wasm.Opcode.@"return");
@@ -706,7 +761,7 @@ const VirtualMachine = struct {
                     label_i -= 1;
                 },
                 .br, .br_if => {
-                    const label_idx = readVarInt(module_bytes, code_i, u32);
+                    const label_idx = try leb.readULEB128(u32, reader);
                     const label = &labels[label_i - label_idx];
                     const operand_count = label.operandCount();
                     opcodes[pc.opcode] = opcode;
@@ -718,14 +773,14 @@ const VirtualMachine = struct {
                     pc.operand += 3;
                 },
                 .br_table => {
-                    const labels_len = readVarInt(module_bytes, code_i, u32);
+                    const labels_len = try leb.readULEB128(u32, reader);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = labels_len;
                     pc.operand += 1;
                     var i: u32 = 0;
                     while (i <= labels_len) : (i += 1) {
-                        const label_idx = readVarInt(module_bytes, code_i, u32);
+                        const label_idx = try leb.readULEB128(u32, reader);
                         const label = &labels[label_i - label_idx];
                         const operand_count = label.operandCount();
                         operands[pc.operand] = @intCast(u1, operand_count) |
@@ -736,7 +791,7 @@ const VirtualMachine = struct {
                     }
                 },
                 .call => {
-                    const fn_id = readVarInt(module_bytes, code_i, u32);
+                    const fn_id = try leb.readULEB128(u32, reader);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = fn_id;
@@ -748,10 +803,10 @@ const VirtualMachine = struct {
                     stack_depth = stack_depth - type_info.param_count + type_info.result_count;
                 },
                 .call_indirect => {
-                    const type_idx = readVarInt(module_bytes, code_i, u32);
+                    const type_idx = try leb.readULEB128(u32, reader);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
-                    assert(readVarInt(module_bytes, code_i, u32) == 0);
+                    assert(try leb.readULEB128(u32, reader) == 0);
                     const info = vm.types[type_idx];
                     stack_depth = stack_depth - info.param_count + info.result_count;
                 },
@@ -769,7 +824,7 @@ const VirtualMachine = struct {
                 .local_set,
                 .local_tee,
                 => {
-                    const local_idx = readVarInt(module_bytes, code_i, u32);
+                    const local_idx = try leb.readULEB128(u32, reader);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = initial_stack_depth - local_idx;
@@ -778,7 +833,7 @@ const VirtualMachine = struct {
                 .global_get,
                 .global_set,
                 => {
-                    const global_idx = readVarInt(module_bytes, code_i, u32);
+                    const global_idx = try leb.readULEB128(u32, reader);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = global_idx;
@@ -810,27 +865,26 @@ const VirtualMachine = struct {
                 => {
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
-                    _ = readVarInt(module_bytes, code_i, u32);
-                    operands[pc.operand] = readVarInt(module_bytes, code_i, u32);
+                    _ = try leb.readULEB128(u32, reader);
+                    operands[pc.operand] = try leb.readULEB128(u32, reader);
                     offset_counts[@boolToInt(operands[pc.operand] != 0)] += 1;
                     max_offset = @max(operands[pc.operand], max_offset);
                     pc.operand += 1;
                 },
                 .memory_size, .memory_grow => {
-                    assert(module_bytes[code_i.*] == 0);
-                    code_i.* += 1;
+                    assert(try reader.readByte() == 0);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                 },
                 .i32_const => {
-                    const x = @bitCast(u32, readVarInt(module_bytes, code_i, i32));
+                    const x = @bitCast(u32, try leb.readILEB128(i32, reader));
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = x;
                     pc.operand += 1;
                 },
                 .i64_const => {
-                    const x = @bitCast(u64, readVarInt(module_bytes, code_i, i64));
+                    const x = @bitCast(u64, try leb.readILEB128(i64, reader));
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = @truncate(u32, x);
@@ -838,14 +892,14 @@ const VirtualMachine = struct {
                     pc.operand += 2;
                 },
                 .f32_const => {
-                    const x = @bitCast(u32, readFloat32(module_bytes, code_i));
+                    const x = try reader.readIntLittle(u32);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = x;
                     pc.operand += 1;
                 },
                 .f64_const => {
-                    const x = @bitCast(u64, readFloat64(module_bytes, code_i));
+                    const x = try reader.readIntLittle(u64);
                     opcodes[pc.opcode] = opcode;
                     pc.opcode += 1;
                     operands[pc.operand] = @truncate(u32, x);
@@ -867,15 +921,13 @@ const VirtualMachine = struct {
                         pc.opcode += 2;
                     },
                     .memory_copy => {
-                        assert(module_bytes[code_i.*] == 0 and module_bytes[code_i.* + 1] == 0);
-                        code_i.* += 2;
+                        assert(try reader.readByte() == 0 and try reader.readByte() == 0);
                         opcodes[pc.opcode] = opcode;
                         opcodes[pc.opcode + 1] = prefixed_opcode;
                         pc.opcode += 2;
                     },
                     .memory_fill => {
-                        assert(module_bytes[code_i.*] == 0);
-                        code_i.* += 1;
+                        assert(try reader.readByte() == 0);
                         opcodes[pc.opcode] = opcode;
                         opcodes[pc.opcode + 1] = prefixed_opcode;
                         pc.opcode += 2;
@@ -893,7 +945,7 @@ const VirtualMachine = struct {
                 .@"return",
                 .br,
                 .br_table,
-                => stack_depth = std.math.maxInt(u32) / 2,
+                => stack_depth = math.maxInt(u32) / 2,
 
                 else => {},
             }
@@ -904,7 +956,7 @@ const VirtualMachine = struct {
         const stack_info = vm.operands[vm.pc.operand];
         const result_count = @truncate(u1, stack_info);
         const stack_adjust = stack_info >> 1;
-        std.mem.copy(
+        mem.copy(
             u64,
             vm.stack[vm.stack_top - result_count - stack_adjust ..],
             vm.stack[vm.stack_top - result_count ..][0..result_count],
@@ -933,147 +985,175 @@ const VirtualMachine = struct {
         vm.push(u32, vm.pc.opcode);
         vm.push(u32, vm.pc.operand);
 
-        vm.pc = func.pc;
+        vm.pc = func.entry_pc;
     }
 
-    fn callImport(vm: *VirtualMachine, imp: Import) void {
-        if (mem.eql(u8, imp.sym_name, "fd_prestat_get")) {
-            const buf = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_prestat_get(vm, fd, buf)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_prestat_dir_name")) {
-            const path_len = vm.pop(u32);
-            const path = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_prestat_dir_name(vm, fd, path, path_len)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_close")) {
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_close(vm, fd)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_read")) {
-            const nread = vm.pop(u32);
-            const iovs_len = vm.pop(u32);
-            const iovs = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_read(vm, fd, iovs, iovs_len, nread)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_filestat_get")) {
-            const buf = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_filestat_get(vm, fd, buf)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_size")) {
-            const size = vm.pop(u64);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_filestat_set_size(vm, fd, size)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_filestat_set_times")) {
-            @panic("TODO implement fd_filestat_set_times");
-        } else if (mem.eql(u8, imp.sym_name, "fd_fdstat_get")) {
-            const buf = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_fdstat_get(vm, fd, buf)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_readdir")) {
-            @panic("TODO implement fd_readdir");
-        } else if (mem.eql(u8, imp.sym_name, "fd_write")) {
-            const nwritten = vm.pop(u32);
-            const iovs_len = vm.pop(u32);
-            const iovs = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_write(vm, fd, iovs, iovs_len, nwritten)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_pwrite")) {
-            const nwritten = vm.pop(u32);
-            const offset = vm.pop(u64);
-            const iovs_len = vm.pop(u32);
-            const iovs = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_fd_pwrite(vm, fd, iovs, iovs_len, offset, nwritten)));
-        } else if (mem.eql(u8, imp.sym_name, "proc_exit")) {
-            std.process.exit(@intCast(u8, vm.pop(u32)));
-            unreachable;
-        } else if (mem.eql(u8, imp.sym_name, "args_sizes_get")) {
-            const argv_buf_size = vm.pop(u32);
-            const argc = vm.pop(u32);
-            vm.push(u64, @enumToInt(wasi_args_sizes_get(vm, argc, argv_buf_size)));
-        } else if (mem.eql(u8, imp.sym_name, "args_get")) {
-            const argv_buf = vm.pop(u32);
-            const argv = vm.pop(u32);
-            vm.push(u64, @enumToInt(wasi_args_get(vm, argv, argv_buf)));
-        } else if (mem.eql(u8, imp.sym_name, "random_get")) {
-            const buf_len = vm.pop(u32);
-            const buf = vm.pop(u32);
-            vm.push(u64, @enumToInt(wasi_random_get(vm, buf, buf_len)));
-        } else if (mem.eql(u8, imp.sym_name, "environ_sizes_get")) {
-            @panic("TODO implement environ_sizes_get");
-        } else if (mem.eql(u8, imp.sym_name, "environ_get")) {
-            @panic("TODO implement environ_get");
-        } else if (mem.eql(u8, imp.sym_name, "path_filestat_get")) {
-            const buf = vm.pop(u32);
-            const path_len = vm.pop(u32);
-            const path = vm.pop(u32);
-            const flags = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_path_filestat_get(vm, fd, flags, path, path_len, buf)));
-        } else if (mem.eql(u8, imp.sym_name, "path_create_directory")) {
-            const path_len = vm.pop(u32);
-            const path = vm.pop(u32);
-            const fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_path_create_directory(vm, fd, path, path_len)));
-        } else if (mem.eql(u8, imp.sym_name, "path_rename")) {
-            const new_path_len = vm.pop(u32);
-            const new_path = vm.pop(u32);
-            const new_fd = vm.pop(i32);
-            const old_path_len = vm.pop(u32);
-            const old_path = vm.pop(u32);
-            const old_fd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_path_rename(
-                vm,
-                old_fd,
-                old_path,
-                old_path_len,
-                new_fd,
-                new_path,
-                new_path_len,
-            )));
-        } else if (mem.eql(u8, imp.sym_name, "path_open")) {
-            const fd = vm.pop(u32);
-            const fs_flags = vm.pop(u32);
-            const fs_rights_inheriting = vm.pop(u64);
-            const fs_rights_base = vm.pop(u64);
-            const oflags = vm.pop(u32);
-            const path_len = vm.pop(u32);
-            const path = vm.pop(u32);
-            const dirflags = vm.pop(u32);
-            const dirfd = vm.pop(i32);
-            vm.push(u64, @enumToInt(wasi_path_open(
-                vm,
-                dirfd,
-                dirflags,
-                path,
-                path_len,
-                @intCast(u16, oflags),
-                fs_rights_base,
-                fs_rights_inheriting,
-                @intCast(u16, fs_flags),
-                fd,
-            )));
-        } else if (mem.eql(u8, imp.sym_name, "path_remove_directory")) {
-            @panic("TODO implement path_remove_directory");
-        } else if (mem.eql(u8, imp.sym_name, "path_unlink_file")) {
-            @panic("TODO implement path_unlink_file");
-        } else if (mem.eql(u8, imp.sym_name, "clock_time_get")) {
-            const timestamp = vm.pop(u32);
-            const precision = vm.pop(u64);
-            const clock_id = vm.pop(u32);
-            vm.push(u64, @enumToInt(wasi_clock_time_get(vm, clock_id, precision, timestamp)));
-        } else if (mem.eql(u8, imp.sym_name, "fd_pread")) {
-            @panic("TODO implement fd_pread");
-        } else if (mem.eql(u8, imp.sym_name, "debug")) {
-            const number = vm.pop(u64);
-            const text = vm.pop(u32);
-            wasi_debug(vm, text, number);
-        } else if (mem.eql(u8, imp.sym_name, "debug_slice")) {
-            const len = vm.pop(u32);
-            const ptr = vm.pop(u32);
-            wasi_debug_slice(vm, ptr, len);
-        } else {
-            std.debug.panic("unhandled import: {s}", .{imp.sym_name});
+    fn callImport(vm: *VirtualMachine, import: Import) void {
+        switch (import.mod) {
+            .wasi_snapshot_preview1 => switch (import.name) {
+                .fd_prestat_get => {
+                    const buf = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_prestat_get(vm, fd, buf)));
+                },
+                .fd_prestat_dir_name => {
+                    const path_len = vm.pop(u32);
+                    const path = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_prestat_dir_name(vm, fd, path, path_len)));
+                },
+                .fd_close => {
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_close(vm, fd)));
+                },
+                .fd_read => {
+                    const nread = vm.pop(u32);
+                    const iovs_len = vm.pop(u32);
+                    const iovs = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_read(vm, fd, iovs, iovs_len, nread)));
+                },
+                .fd_filestat_get => {
+                    const buf = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_filestat_get(vm, fd, buf)));
+                },
+                .fd_filestat_set_size => {
+                    const size = vm.pop(u64);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_filestat_set_size(vm, fd, size)));
+                },
+                .fd_filestat_set_times => {
+                    @panic("TODO implement fd_filestat_set_times");
+                },
+                .fd_fdstat_get => {
+                    const buf = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_fdstat_get(vm, fd, buf)));
+                },
+                .fd_readdir => {
+                    @panic("TODO implement fd_readdir");
+                },
+                .fd_write => {
+                    const nwritten = vm.pop(u32);
+                    const iovs_len = vm.pop(u32);
+                    const iovs = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_write(vm, fd, iovs, iovs_len, nwritten)));
+                },
+                .fd_pwrite => {
+                    const nwritten = vm.pop(u32);
+                    const offset = vm.pop(u64);
+                    const iovs_len = vm.pop(u32);
+                    const iovs = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_fd_pwrite(vm, fd, iovs, iovs_len, offset, nwritten)));
+                },
+                .proc_exit => {
+                    std.c.exit(@intCast(c_int, vm.pop(wasi.exitcode_t)));
+                    unreachable;
+                },
+                .args_sizes_get => {
+                    const argv_buf_size = vm.pop(u32);
+                    const argc = vm.pop(u32);
+                    vm.push(u64, @enumToInt(wasi_args_sizes_get(vm, argc, argv_buf_size)));
+                },
+                .args_get => {
+                    const argv_buf = vm.pop(u32);
+                    const argv = vm.pop(u32);
+                    vm.push(u64, @enumToInt(wasi_args_get(vm, argv, argv_buf)));
+                },
+                .random_get => {
+                    const buf_len = vm.pop(u32);
+                    const buf = vm.pop(u32);
+                    vm.push(u64, @enumToInt(wasi_random_get(vm, buf, buf_len)));
+                },
+                .environ_sizes_get => {
+                    @panic("TODO implement environ_sizes_get");
+                },
+                .environ_get => {
+                    @panic("TODO implement environ_get");
+                },
+                .path_filestat_get => {
+                    const buf = vm.pop(u32);
+                    const path_len = vm.pop(u32);
+                    const path = vm.pop(u32);
+                    const flags = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_path_filestat_get(vm, fd, flags, path, path_len, buf)));
+                },
+                .path_create_directory => {
+                    const path_len = vm.pop(u32);
+                    const path = vm.pop(u32);
+                    const fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_path_create_directory(vm, fd, path, path_len)));
+                },
+                .path_rename => {
+                    const new_path_len = vm.pop(u32);
+                    const new_path = vm.pop(u32);
+                    const new_fd = vm.pop(i32);
+                    const old_path_len = vm.pop(u32);
+                    const old_path = vm.pop(u32);
+                    const old_fd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_path_rename(
+                        vm,
+                        old_fd,
+                        old_path,
+                        old_path_len,
+                        new_fd,
+                        new_path,
+                        new_path_len,
+                    )));
+                },
+                .path_open => {
+                    const fd = vm.pop(u32);
+                    const fs_flags = vm.pop(u32);
+                    const fs_rights_inheriting = vm.pop(u64);
+                    const fs_rights_base = vm.pop(u64);
+                    const oflags = vm.pop(u32);
+                    const path_len = vm.pop(u32);
+                    const path = vm.pop(u32);
+                    const dirflags = vm.pop(u32);
+                    const dirfd = vm.pop(i32);
+                    vm.push(u64, @enumToInt(wasi_path_open(
+                        vm,
+                        dirfd,
+                        dirflags,
+                        path,
+                        path_len,
+                        @intCast(u16, oflags),
+                        fs_rights_base,
+                        fs_rights_inheriting,
+                        @intCast(u16, fs_flags),
+                        fd,
+                    )));
+                },
+                .path_remove_directory => {
+                    @panic("TODO implement path_remove_directory");
+                },
+                .path_unlink_file => {
+                    @panic("TODO implement path_unlink_file");
+                },
+                .clock_time_get => {
+                    const timestamp = vm.pop(u32);
+                    const precision = vm.pop(u64);
+                    const clock_id = vm.pop(u32);
+                    vm.push(u64, @enumToInt(wasi_clock_time_get(vm, clock_id, precision, timestamp)));
+                },
+                .fd_pread => {
+                    @panic("TODO implement fd_pread");
+                },
+                .debug => {
+                    const number = vm.pop(u64);
+                    const text = vm.pop(u32);
+                    wasi_debug(vm, text, number);
+                },
+                .debug_slice => {
+                    const len = vm.pop(u32);
+                    const ptr = vm.pop(u32);
+                    wasi_debug_slice(vm, ptr, len);
+                },
+            },
         }
     }
 
@@ -1974,51 +2054,13 @@ const VirtualMachine = struct {
     }
 };
 
-fn readVarInt(bytes: []const u8, i: *u32, comptime T: type) T {
-    switch (@typeInfo(T)) {
-        .Enum => |info| {
-            const int_result = readVarInt(bytes, i, info.tag_type);
-            return @intToEnum(T, int_result);
-        },
-        else => {},
-    }
-    const readFn = switch (@typeInfo(T).Int.signedness) {
-        .signed => std.leb.readILEB128,
-        .unsigned => std.leb.readULEB128,
-    };
-    var fbs = std.io.fixedBufferStream(bytes);
-    fbs.pos = i.*;
-    const result = readFn(T, fbs.reader()) catch unreachable;
-    i.* = @intCast(u32, fbs.pos);
-    return result;
-}
-
-fn readName(bytes: []const u8, i: *u32) []const u8 {
-    const len = readVarInt(bytes, i, u32);
-    const result = bytes[i.*..][0..len];
-    i.* += len;
-    return result;
-}
-
-fn readFloat32(bytes: []const u8, i: *u32) f32 {
-    const result = @bitCast(f32, std.mem.readIntLittle(i32, bytes[i.*..][0..4]));
-    i.* += 4;
-    return result;
-}
-
-fn readFloat64(bytes: []const u8, i: *u32) f64 {
-    const result = @bitCast(f64, std.mem.readIntLittle(i64, bytes[i.*..][0..8]));
-    i.* += 8;
-    return result;
-}
-
 /// fn args_sizes_get(argc: *usize, argv_buf_size: *usize) errno_t;
 fn wasi_args_sizes_get(vm: *VirtualMachine, argc: u32, argv_buf_size: u32) wasi.errno_t {
     trace_log.debug("wasi_args_sizes_get argc={d} argv_buf_size={d}", .{ argc, argv_buf_size });
     mem.writeIntLittle(u32, vm.memory[argc..][0..4], @intCast(u32, vm.args.len));
     var buf_size: usize = 0;
     for (vm.args) |arg| {
-        buf_size += arg.len + 1;
+        buf_size += mem.span(arg).len + 1;
     }
     mem.writeIntLittle(u32, vm.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
     return .SUCCESS;
@@ -2031,9 +2073,9 @@ fn wasi_args_get(vm: *VirtualMachine, argv: u32, argv_buf: u32) wasi.errno_t {
     for (vm.args) |arg, arg_i| {
         // Write the arg to the buffer.
         const argv_ptr = argv_buf + argv_buf_i;
-        mem.copy(u8, vm.memory[argv_buf + argv_buf_i ..], arg);
-        vm.memory[argv_buf + argv_buf_i + arg.len] = 0;
-        argv_buf_i += arg.len + 1;
+        const arg_len = mem.span(arg).len + 1;
+        mem.copy(u8, vm.memory[argv_buf + argv_buf_i ..], arg[0..arg_len]);
+        argv_buf_i += arg_len;
 
         mem.writeIntLittle(u32, vm.memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
     }
