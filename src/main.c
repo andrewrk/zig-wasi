@@ -445,7 +445,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
     labels[label_i].ref_list = UINT32_MAX;
 
     for (;;) {
-        enum Op opcode = mod_ptr[*code_i];
+        enum Op opcode = (uint8_t)mod_ptr[*code_i];
         *code_i += 1;
 
         uint32_t initial_stack_depth = stack_depth;
@@ -680,6 +680,8 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                 case PrefixedOp_table_size:
                 stack_depth += 1;
                 break;
+
+                default: panic("unreachable");
             }
         }
 
@@ -732,7 +734,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                 opcodes[pc->opcode] = Op_br;
                 pc->opcode += 1;
                 operands[pc->operand] = operand_count |
-                    (stack_depth - operand_count - label->stack_depth) << 1;
+                    ((stack_depth - operand_count - label->stack_depth) << 1);
                 operands[pc->operand + 1] = label->ref_list;
                 label->ref_list = pc->operand + 1;
                 pc->operand += 3;
@@ -766,7 +768,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                     opcodes[pc->opcode] = Op_return;
                     pc->opcode += 1;
                     uint32_t operand_count = Label_operandCount(&labels[0]);
-                    operands[pc->operand] = operand_count | (2 + operand_count) << 1;
+                    operands[pc->operand] = operand_count | ((2 + operand_count) << 1);
                     stack_depth -= operand_count;
                     assert(stack_depth == labels[0].stack_depth);
                     operands[pc->operand + 1] = stack_depth;
@@ -786,7 +788,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                 opcodes[pc->opcode] = opcode;
                 pc->opcode += 1;
                 operands[pc->operand] = operand_count |
-                    (stack_depth - operand_count - label->stack_depth) << 1;
+                    ((stack_depth - operand_count - label->stack_depth) << 1);
                 operands[pc->operand + 1] = label->ref_list;
                 label->ref_list = pc->operand + 1;
                 pc->operand += 3;
@@ -805,7 +807,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                     struct Label * label = &labels[label_i - label_idx];
                     uint32_t operand_count = Label_operandCount(label);
                     operands[pc->operand] = operand_count |
-                        (stack_depth - operand_count - label->stack_depth) << 1;
+                        ((stack_depth - operand_count - label->stack_depth) << 1);
                     operands[pc->operand + 1] = label->ref_list;
                     label->ref_list = pc->operand + 1;
                     pc->operand += 3;
@@ -844,7 +846,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                 pc->opcode += 1;
                 uint32_t operand_count = Label_operandCount(&labels[0]);
                 operands[pc->operand] = operand_count |
-                    (2 + stack_depth - labels[0].stack_depth) << 1;
+                    ((2 + stack_depth - labels[0].stack_depth) << 1);
                 stack_depth -= operand_count;
                 operands[pc->operand + 1] = stack_depth;
                 pc->operand += 2;
