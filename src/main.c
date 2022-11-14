@@ -1022,6 +1022,35 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
     }
 }
 
+static void vm_callImport(struct VirtualMachine *vm, struct Import imp) {
+    panic("TODO implement callImport");
+}
+
+static void vm_push_u32(struct VirtualMachine *vm, uint32_t x) {
+    panic("TODO implement vm_push_u32");
+}
+
+static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
+    if (fn_id < vm->imports_len) {
+        struct Import imp = vm->imports[fn_id];
+        return vm_callImport(vm, imp);
+    }
+    uint32_t fn_idx = fn_id - vm->imports_len;
+    struct Function *func = &vm->functions[fn_idx];
+
+    // Push zeroed locals to stack
+    memset(vm->stack + vm->stack_top, 0, func->locals_count * sizeof(uint64_t));
+    vm->stack_top += func->locals_count;
+
+    vm_push_u32(vm, vm->pc.opcode);
+    vm_push_u32(vm, vm->pc.operand);
+
+    vm->pc = func->pc;
+}
+
+static void vm_run(struct VirtualMachine *vm) {
+    panic("TODO implement vm_run");
+}
 
 int main(int argc, char **argv) {
     char *memory = mmap( NULL, max_memory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -1276,7 +1305,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    panic("TODO: finish porting the rest");
+    vm_call(&vm, start_fn_idx);
+    vm_run(&vm);
 
     return 0;
 }
