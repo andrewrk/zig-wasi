@@ -502,6 +502,41 @@ int main(int argc, char **argv) {
         }
     }
 
+    uint32_t *table = NULL;
+    {
+        i = section_starts[Section_table];
+        uint32_t table_count = read32_uleb128(mod.ptr, &i);
+        if (table_count > 1) {
+            panic("expected only one table section");
+        } else if (table_count == 1) {
+            uint32_t element_type = read32_uleb128(mod.ptr, &i);
+            uint32_t has_max = read32_uleb128(mod.ptr, &i);
+            if (has_max != 1) panic("expected has_max==1");
+            uint32_t initial = read32_uleb128(mod.ptr, &i);
+            uint32_t maximum = read32_uleb128(mod.ptr, &i);
+
+            i = section_starts[Section_element];
+            uint32_t element_section_count = read32_uleb128(mod.ptr, &i);
+            if (element_section_count != 1) panic("expected one element section");
+            uint32_t flags = read32_uleb128(mod.ptr, &i);
+            enum Op opcode = mod.ptr[i];
+            i += 1;
+            if (opcode != Op_i32_const) panic("expected op i32_const");
+            uint32_t offset = read32_uleb128(mod.ptr, &i);
+            enum Op end = mod.ptr[i];
+            if (end != Op_end) panic("expected op end");
+            i += 1;
+            uint32_t elem_count = read32_uleb128(mod.ptr, &i);
+
+            table = arena_alloc(maximum);
+            memset(table, 0, maximum);
+
+            for (uint32_t elem_i = 0; elem_i < elem_count; elem_i += 1) {
+                table[elem_i + offset] = read32_uleb128(mod.ptr, &i);
+            }
+        }
+    }
+
     panic("TODO: finish porting the rest");
 
     return 0;
