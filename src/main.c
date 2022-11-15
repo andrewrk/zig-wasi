@@ -2504,6 +2504,10 @@ static void vm_run(struct VirtualMachine *vm) {
     for (;;) {
         enum Op op = opcodes[pc->opcode];
         pc->opcode += 1;
+        //if (vm->stack_top > 0) {
+        //    fprintf(stderr, "stack[%u]=%lx pc=%u:%u, op=%u\n", 
+        //        vm->stack_top - 1, vm->stack[vm->stack_top - 1], pc->opcode, pc->operand, op);
+        //}
         switch (op) {
             case Op_unreachable:
                 panic("unreachable reached");
@@ -2738,6 +2742,7 @@ static void vm_run(struct VirtualMachine *vm) {
             case Op_wasm:
                 {
                     enum WasmOp wasm_op = opcodes[pc->opcode];
+                    //fprintf(stderr, "op2=%u\n", wasm_op);
                     pc->opcode += 1;
                     switch (wasm_op) {
                         case WasmOp_unreachable:
@@ -2820,7 +2825,7 @@ static void vm_run(struct VirtualMachine *vm) {
                             {
                                 uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
                                 pc->operand += 1;
-                                vm_push_u32(vm, vm->memory[offset]);
+                                vm_push_u32(vm, (uint8_t)vm->memory[offset]);
                             }
                             break;
                         case WasmOp_i32_load16_s:
@@ -2850,7 +2855,7 @@ static void vm_run(struct VirtualMachine *vm) {
                             {
                                 uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
                                 pc->operand += 1;
-                                vm_push_u64(vm, vm->memory[offset]);
+                                vm_push_u64(vm, (uint8_t)vm->memory[offset]);
                             }
                             break;
                         case WasmOp_i64_load16_s:
