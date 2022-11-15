@@ -10,9 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef __linux__
@@ -854,20 +855,18 @@ static enum wasi_errno_t wasi_fd_read(
     uint32_t iovs_len, // usize
     uint32_t nread // *usize
 ) {
-    panic("TODO implement wasi_fd_read");
-    //int host_fd = to_host_fd(fd);
-    //var i: u32 = 0;
-    //var total_read: usize = 0;
-    //while (i < iovs_len) : (i += 1) {
-    //    uint32_t ptr = read_u32_le(vm->memory + iovs + i * 8 + 0);
-    //    uint32_t len = read_u32_le(vm->memory + iovs + i * 8 + 4);
-    //    const buf = vm->memory[ptr..][0..len];
-    //    const read = os.read(host_fd, buf) catch |err| return toWasiError(err);
-    //    trace_log.debug("read {d} bytes out of {d}", .{ read, buf.len });
-    //    total_read += read;
-    //    if (read != buf.len) break;
-    //}
-    //write_u32_le(vm->memory[nread..][0..4], @intCast(u32, total_read));
+    int host_fd = to_host_fd(fd);
+    uint32_t i = 0;
+    size_t total_read = 0;
+    for (; i < iovs_len; i += 1) {
+        uint32_t ptr = read_u32_le(vm->memory + iovs + i * 8 + 0);
+        uint32_t len = read_u32_le(vm->memory + iovs + i * 8 + 4);
+        ssize_t amt_read = read(host_fd, vm->memory + ptr, len);
+        if (amt_read < 0) return to_wasi_err(errno);
+        total_read += amt_read;
+        if (amt_read != len) break;
+    }
+    write_u32_le(vm->memory + nread, total_read);
     return WASI_ESUCCESS;
 }
 
@@ -1011,15 +1010,17 @@ static enum wasi_errno_t wasi_path_rename(
     uint32_t new_path_ptr, // [*]const u8
     uint32_t new_path_len // usize
 ) {
-    panic("TODO implement wasi_path_rename");
-    //const old_path = vm->memory[old_path_ptr..][0..old_path_len];
-    //const new_path = vm->memory[new_path_ptr..][0..new_path_len];
-    //trace_log.debug("wasi_path_rename old_fd={d} old_path={s} new_fd={d} new_path={s}", .{
-    //    old_fd, old_path, new_fd, new_path,
-    //});
-    //const old_host_fd = to_host_fd(old_fd);
-    //const new_host_fd = to_host_fd(new_fd);
-    //os.renameat(old_host_fd, old_path, new_host_fd, new_path) catch |err| return toWasiError(err);
+    char old_path[PATH_MAX];
+    memcpy(old_path, vm->memory + old_path_ptr, old_path_len);
+    old_path[old_path_len] = 0;
+
+    char new_path[PATH_MAX];
+    memcpy(new_path, vm->memory + new_path_ptr, new_path_len);
+    new_path[new_path_len] = 0;
+
+    int old_host_fd = to_host_fd(old_fd);
+    int new_host_fd = to_host_fd(new_fd);
+    if (renameat(old_host_fd, old_path, new_host_fd, new_path) == -1) return to_wasi_err(errno);
     return WASI_ESUCCESS;
 }
 
@@ -1064,30 +1065,23 @@ static enum wasi_errno_t wasi_fd_fdstat_get(struct VirtualMachine *vm, int32_t f
 static enum wasi_errno_t wasi_clock_time_get(struct VirtualMachine *vm,
         uint32_t clock_id, uint64_t precision, uint32_t timestamp)
 {
-    panic("TODO implement wasi_clock_time_get");
-    ////const host_clock_id = toHostClockId(clock_id);
-    //_ = precision;
-    //_ = clock_id;
-    //const wasi_ts = to_wasi_timestamp(std.time.nanoTimestamp());
-    //write_u64_le(vm->memory[timestamp..][0..8], wasi_ts);
+    if (clock_id != 1) panic("expected wasi_clock_time_get to use CLOCK_MONOTONIC");
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) return to_wasi_err(errno);
+    uint64_t wasi_ts = to_wasi_timestamp(ts);
+    write_u64_le(vm->memory + timestamp, wasi_ts);
     return WASI_ESUCCESS;
 }
 
 ///pub extern "wasi_snapshot_preview1" fn debug(string: [*:0]const u8, x: u64) void;
 void wasi_debug(struct VirtualMachine *vm, uint32_t text, uint64_t n) {
-    panic("TODO implement wasi_debug");
-    //const s = mem.sliceTo(vm->memory[text..], 0);
-    //trace_log.debug("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
+    fprintf(stderr, "wasi_debug: '%s' number=%lu %lx\n", vm->memory + text, n, n);
 }
 
 /// pub extern "wasi_snapshot_preview1" fn debug_slice(ptr: [*]const u8, len: usize) void;
 void wasi_debug_slice(struct VirtualMachine *vm, uint32_t ptr, uint32_t len) {
-    panic("TODO implement wasi_debug_slice");
-    //const s = vm->memory[ptr..][0..len];
-    //trace_log.debug("wasi_debug_slice: '{s}'", .{s});
+    fprintf(stderr, "wasi_debug_slice: '%.*s'\n", len, vm->memory + ptr);
 }
-
-
 
 struct Label {
     enum WasmOp opcode;
@@ -2329,7 +2323,7 @@ static void vm_callImport(struct VirtualMachine *vm, struct Import import) {
             break;
             case ImpName_fd_readdir:
             {
-                panic("TODO implement fd_readdir");
+                panic("unexpected call to fd_readdir");
             }
             break;
             case ImpName_fd_write:
