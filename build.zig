@@ -17,7 +17,8 @@ pub fn build(b: *std.build.Builder) void {
     exe.setBuildMode(mode);
     exe.install();
 
-    const c_exe = b.addExecutable("c-wasi", "src/main.c");
+    const c_exe = b.addExecutable("c-wasi", null);
+    c_exe.addCSourceFiles(&.{"src/main.c"}, &.{ "-std=c99", "-Wall", "-Werror" });
     c_exe.linkLibC();
     c_exe.setTarget(target);
     c_exe.setBuildMode(mode);

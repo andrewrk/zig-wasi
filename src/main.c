@@ -211,20 +211,6 @@ static struct ByteSlice read_name(char *ptr, uint32_t *i) {
     return res;
 }
 
-static float read_f32(const char *ptr, uint32_t *i) {
-    float result;
-    memcpy(&result, ptr + *i, 4);
-    *i += 4;
-    return result;
-}
-
-static double read_f64(const char *ptr, uint32_t *i) {
-    double result;
-    memcpy(&result, ptr + *i, 8);
-    *i += 8;
-    return result;
-}
-
 enum Section {
     Section_custom,
     Section_type,
@@ -2014,6 +2000,23 @@ static void vm_run(struct VirtualMachine *vm) {
                 }
                 break;
 
+            case Op_const_32:
+                {
+                    uint32_t x = operands[pc->operand];
+                    pc->operand += 1;
+                    vm_push_i32(vm, x);
+                }
+                break;
+
+            case Op_const_64:
+                {
+                    uint64_t x = ((uint64_t)operands[pc->operand]) |
+                        (((uint64_t)operands[pc->operand + 1]) << 32);
+                    pc->operand += 2;
+                    vm_push_i64(vm, x);
+                }
+                break;
+
             case Op_wasm:
                 {
                     enum WasmOp wasm_op = opcodes[pc->opcode];
@@ -2038,6 +2041,10 @@ static void vm_run(struct VirtualMachine *vm) {
                         case WasmOp_local_tee:
                         case WasmOp_global_get:
                         case WasmOp_global_set:
+                        case WasmOp_i32_const:
+                        case WasmOp_i64_const:
+                        case WasmOp_f32_const:
+                        case WasmOp_f64_const:
                         case WasmOp_prefixed:
                             panic("not produced by decodeCode");
                             break;
@@ -2243,36 +2250,6 @@ static void vm_run(struct VirtualMachine *vm) {
                                     vm->memory_len = new_len;
                                     vm_push_u32(vm, old_page_count);
                                 }
-                            }
-                            break;
-                        case WasmOp_i32_const:
-                            {
-                                uint32_t x = operands[pc->operand];
-                                pc->operand += 1;
-                                vm_push_i32(vm, x);
-                            }
-                            break;
-                        case WasmOp_i64_const:
-                            {
-                                uint64_t x = ((uint64_t)operands[pc->operand]) |
-                                    ((uint64_t)(operands[pc->operand + 1]) << 32);
-                                pc->operand += 2;
-                                vm_push_i64(vm, x);
-                            }
-                            break;
-                        case WasmOp_f32_const:
-                            {
-                                uint32_t x = operands[pc->operand];
-                                pc->operand += 1;
-                                vm_push_u32(vm, x);
-                            }
-                            break;
-                        case WasmOp_f64_const:
-                            {
-                                uint64_t x = ((uint64_t)operands[pc->operand]) |
-                                    (((uint64_t)operands[pc->operand + 1]) << 32);
-                                pc->operand += 2;
-                                vm_push_u64(vm, x);
                             }
                             break;
                         case WasmOp_i32_eqz:
@@ -3092,70 +3069,68 @@ static void vm_run(struct VirtualMachine *vm) {
                         default:
                             panic("unreachable");
                     }
-                    break;
-
-                    case Op_wasm_prefixed:
-                    {
-                        enum WasmPrefixedOp wasm_prefixed_op = opcodes[pc->opcode];
-                        pc->opcode += 1;
-                        switch (wasm_prefixed_op) {
-                            case WasmPrefixedOp_i32_trunc_sat_f32_s:
-                                panic("unreachable");
-                            case WasmPrefixedOp_i32_trunc_sat_f32_u:
-                                panic("unreachable");
-                            case WasmPrefixedOp_i32_trunc_sat_f64_s:
-                                panic("unreachable");
-                            case WasmPrefixedOp_i32_trunc_sat_f64_u:
-                                panic("unreachable");
-                            case WasmPrefixedOp_i64_trunc_sat_f32_s:
-                                panic("unreachable");
-                            case WasmPrefixedOp_i64_trunc_sat_f32_u:
-                                panic("unreachable");
-                            case WasmPrefixedOp_i64_trunc_sat_f64_s:
-                                panic("unreachable");
-                            case WasmPrefixedOp_i64_trunc_sat_f64_u:
-                                panic("unreachable");
-                            case WasmPrefixedOp_memory_init:
-                                panic("unreachable");
-                            case WasmPrefixedOp_data_drop:
-                                panic("unreachable");
-
-                            case WasmPrefixedOp_memory_copy:
-                                {
-                                    uint32_t n = vm_pop_u32(vm);
-                                    uint32_t src = vm_pop_u32(vm);
-                                    uint32_t dest = vm_pop_u32(vm);
-                                    assert(dest + n <= vm->memory_len);
-                                    assert(src + n <= vm->memory_len);
-                                    assert(src + n <= dest || dest + n <= src); // overlapping
-                                    memcpy(vm->memory + dest, vm->memory + src, n);
-                                }
-                                break;
-
-                            case WasmPrefixedOp_memory_fill:
-                                {
-                                    uint32_t n = vm_pop_u32(vm);
-                                    uint8_t value = vm_pop_u32(vm);
-                                    uint32_t dest = vm_pop_u32(vm);
-                                    assert(dest + n <= vm->memory_len);
-                                    memset(vm->memory + dest, value, n);
-                                }
-                                break;
-
-                            case WasmPrefixedOp_table_init: panic("unreachable");
-                            case WasmPrefixedOp_elem_drop: panic("unreachable");
-                            case WasmPrefixedOp_table_copy: panic("unreachable");
-                            case WasmPrefixedOp_table_grow: panic("unreachable");
-                            case WasmPrefixedOp_table_size: panic("unreachable");
-                            case WasmPrefixedOp_table_fill: panic("unreachable");
-                            default: panic("unreachable");
-                        }
-                    }
-                    break;
-
-                    default:
-                    panic("unreachable");
                 }
+                break;
+
+            case Op_wasm_prefixed:
+                {
+                    enum WasmPrefixedOp wasm_prefixed_op = opcodes[pc->opcode];
+                    pc->opcode += 1;
+                    switch (wasm_prefixed_op) {
+                        case WasmPrefixedOp_i32_trunc_sat_f32_s:
+                            panic("unreachable");
+                        case WasmPrefixedOp_i32_trunc_sat_f32_u:
+                            panic("unreachable");
+                        case WasmPrefixedOp_i32_trunc_sat_f64_s:
+                            panic("unreachable");
+                        case WasmPrefixedOp_i32_trunc_sat_f64_u:
+                            panic("unreachable");
+                        case WasmPrefixedOp_i64_trunc_sat_f32_s:
+                            panic("unreachable");
+                        case WasmPrefixedOp_i64_trunc_sat_f32_u:
+                            panic("unreachable");
+                        case WasmPrefixedOp_i64_trunc_sat_f64_s:
+                            panic("unreachable");
+                        case WasmPrefixedOp_i64_trunc_sat_f64_u:
+                            panic("unreachable");
+                        case WasmPrefixedOp_memory_init:
+                            panic("unreachable");
+                        case WasmPrefixedOp_data_drop:
+                            panic("unreachable");
+
+                        case WasmPrefixedOp_memory_copy:
+                            {
+                                uint32_t n = vm_pop_u32(vm);
+                                uint32_t src = vm_pop_u32(vm);
+                                uint32_t dest = vm_pop_u32(vm);
+                                assert(dest + n <= vm->memory_len);
+                                assert(src + n <= vm->memory_len);
+                                assert(src + n <= dest || dest + n <= src); // overlapping
+                                memcpy(vm->memory + dest, vm->memory + src, n);
+                            }
+                            break;
+
+                        case WasmPrefixedOp_memory_fill:
+                            {
+                                uint32_t n = vm_pop_u32(vm);
+                                uint8_t value = vm_pop_u32(vm);
+                                uint32_t dest = vm_pop_u32(vm);
+                                assert(dest + n <= vm->memory_len);
+                                memset(vm->memory + dest, value, n);
+                            }
+                            break;
+
+                        case WasmPrefixedOp_table_init: panic("unreachable");
+                        case WasmPrefixedOp_elem_drop: panic("unreachable");
+                        case WasmPrefixedOp_table_copy: panic("unreachable");
+                        case WasmPrefixedOp_table_grow: panic("unreachable");
+                        case WasmPrefixedOp_table_size: panic("unreachable");
+                        case WasmPrefixedOp_table_fill: panic("unreachable");
+                        default: panic("unreachable");
+                    }
+                }
+                break;
+
         }
     }
 }
@@ -3403,6 +3378,7 @@ int main(int argc, char **argv) {
         uint32_t memories_len = read32_uleb128(mod.ptr, &i);
         if (memories_len != 1) panic("unexpected memory count");
         uint32_t flags = read32_uleb128(mod.ptr, &i);
+        (void)flags;
         memory_len = read32_uleb128(mod.ptr, &i) * wasm_page_size;
 
         i = section_starts[Section_data];
@@ -3431,15 +3407,18 @@ int main(int argc, char **argv) {
             panic("expected only one table section");
         } else if (table_count == 1) {
             uint32_t element_type = read32_uleb128(mod.ptr, &i);
+            (void)element_type;
             uint32_t has_max = read32_uleb128(mod.ptr, &i);
             if (has_max != 1) panic("expected has_max==1");
             uint32_t initial = read32_uleb128(mod.ptr, &i);
+            (void)initial;
             uint32_t maximum = read32_uleb128(mod.ptr, &i);
 
             i = section_starts[Section_element];
             uint32_t element_section_count = read32_uleb128(mod.ptr, &i);
             if (element_section_count != 1) panic("expected one element section");
             uint32_t flags = read32_uleb128(mod.ptr, &i);
+            (void)flags;
             enum WasmOp opcode = mod.ptr[i];
             i += 1;
             if (opcode != WasmOp_i32_const) panic("expected op i32_const");
