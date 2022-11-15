@@ -15,6 +15,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#ifdef __linux__
+#include <sys/random.h>
+#endif
+
 enum wasi_errno_t {
     WASI_ESUCCESS = 0,
     WASI_E2BIG = 1,
@@ -728,9 +732,15 @@ static enum wasi_errno_t wasi_args_get(struct VirtualMachine *vm,
 static enum wasi_errno_t wasi_random_get(struct VirtualMachine *vm,
     uint32_t buf, uint32_t buf_len) 
 {
-    panic("TODO implement wasi_random_get");
-    //const host_buf = vm->memory[buf..][0..buf_len];
-    //std.crypto.random.bytes(host_buf);
+#ifdef __linux__
+    if (getrandom(vm->memory + buf, buf_len, 0) != buf_len) {
+        panic("getrandom failed");
+    }
+#else
+    for (uint32_t i = 0; i < buf_len; i += 1) {
+        vm->memory[buf + i] = rand();
+    }
+#endif
     return WASI_ESUCCESS;
 }
 
@@ -742,10 +752,10 @@ static enum wasi_errno_t wasi_random_get(struct VirtualMachine *vm,
 static enum wasi_errno_t wasi_fd_prestat_get(struct VirtualMachine *vm,
     int32_t fd, uint32_t buf)
 {
-    panic("TODO implement wasi_fd_prestat_get");
-    //const preopen = findPreopen(fd) orelse return .BADF;
-    //write_u32_le(vm->memory[buf + 0 ..][0..4], 0);
-    //write_u32_le(vm->memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
+    const struct Preopen *preopen = find_preopen(fd);
+    if (!preopen) return WASI_EBADF;
+    write_u32_le(vm->memory + buf + 0, 0);
+    write_u32_le(vm->memory + buf + 4, preopen->name_len);
     return WASI_ESUCCESS;
 }
 
@@ -753,19 +763,18 @@ static enum wasi_errno_t wasi_fd_prestat_get(struct VirtualMachine *vm,
 static enum wasi_errno_t wasi_fd_prestat_dir_name(struct VirtualMachine *vm,
         int32_t fd, uint32_t path, uint32_t path_len)
 {
-    panic("TODO implement wasi_fd_prestat_dir_name");
-    //const preopen = findPreopen(fd) orelse return .BADF;
-    //assert(path_len == preopen.name.len);
-    //mem.copy(u8, vm->memory[path..], preopen.name);
+    const struct Preopen *preopen = find_preopen(fd);
+    if (!preopen) return WASI_EBADF;
+    if (path_len != preopen->name_len)
+        panic("wasi_fd_prestat_dir_name expects correct name_len");
+    memcpy(vm->memory + path, preopen->name, path_len);
     return WASI_ESUCCESS;
 }
 
 /// extern fn fd_close(fd: fd_t) errno_t;
 static enum wasi_errno_t wasi_fd_close(struct VirtualMachine *vm, int32_t fd) {
-    panic("TODO implement wasi_fd_close");
-    //_ = vm;
-    //const host_fd = toHostFd(fd);
-    //os.close(host_fd);
+    int host_fd = to_host_fd(fd);
+    close(host_fd);
     return WASI_ESUCCESS;
 }
 
