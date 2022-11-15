@@ -134,12 +134,6 @@ static void *arena_alloc(size_t n) {
     return ptr;
 }
 
-static void *arena_realloc(void *ptr, size_t new_n) {
-    void *new_ptr = realloc(ptr, new_n);
-    if (!new_ptr) panic("out of memory");
-    return new_ptr;
-}
-
 static int err_wrap(const char *prefix, int rc) {
     if (rc == -1) {
         perror(prefix);
@@ -213,7 +207,7 @@ static const struct Preopen *find_preopen(int32_t wasi_fd) {
     return NULL;
 }
 
-static const size_t max_memory = 2ul * 1024ul * 1024ul * 1024ul; // 2 GiB
+static const uint32_t max_memory = 2ul * 1024ul * 1024ul * 1024ul; // 2 GiB
 
 static uint16_t read_u16_le(const char *ptr) {
     const uint8_t *u8_ptr = (const uint8_t *)ptr;
@@ -655,6 +649,7 @@ struct VirtualMachine {
     /// Points to one after the last stack item.
     uint32_t stack_top;
     struct ProgramCounter pc;
+    /// Actual memory usage of the WASI code. The capacity is max_memory.
     uint32_t memory_len;
     const char *mod_ptr;
     uint8_t *opcodes;
@@ -1060,6 +1055,8 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
         *code_i += 1;
         enum WasmPrefixedOp prefixed_opcode;
         if (opcode == WasmOp_prefixed) prefixed_opcode = read32_uleb128(mod_ptr, code_i);
+
+        //fprintf(stderr, "decodeCode opcode=0x%x pc=%u:%u\n", opcode, pc->opcode, pc->operand);
 
         uint32_t initial_stack_depth = stack_depth;
         if (unreachable_depth == 0) {
@@ -1748,11 +1745,6 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                     label->ref_list = pc->operand + 1;
                     pc->operand += 3;
                 }
-
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = labels_len;
-                pc->operand += 1;
             }
             break;
 
@@ -2184,7 +2176,7 @@ static float vm_pop_f32(struct VirtualMachine *vm) {
 }
 
 static double vm_pop_f64(struct VirtualMachine *vm) {
-    uint32_t integer = vm_pop_u64(vm);
+    uint64_t integer = vm_pop_u64(vm);
     double result;
     memcpy(&result, &integer, 8);
     return result;
@@ -2422,8 +2414,12 @@ static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
     uint32_t fn_idx = fn_id - vm->imports_len;
     struct Function *func = &vm->functions[fn_idx];
 
+    //struct TypeInfo *type_info = &vm->types[func->type_idx];
+    //fprintf(stderr, "enter fn_id: %u, param_count: %u, result_count: %u, locals_count: %u\n",
+    //    fn_id, type_info->param_count, type_info->result_count, func->locals_count);
+
     // Push zeroed locals to stack
-    memset(&vm->stack[vm->stack_top], 0, func->locals_count * sizeof(uint64_t));
+    memset(vm->stack + vm->stack_top, 0, func->locals_count * sizeof(uint64_t));
     vm->stack_top += func->locals_count;
 
     vm_push_u32(vm, vm->pc.opcode);
@@ -2742,7 +2738,7 @@ static void vm_run(struct VirtualMachine *vm) {
             case Op_wasm:
                 {
                     enum WasmOp wasm_op = opcodes[pc->opcode];
-                    //fprintf(stderr, "op2=%u\n", wasm_op);
+                    //fprintf(stderr, "op2=%x\n", wasm_op);
                     pc->opcode += 1;
                     switch (wasm_op) {
                         case WasmOp_unreachable:
@@ -2973,7 +2969,7 @@ static void vm_run(struct VirtualMachine *vm) {
                                 uint32_t page_count = vm_pop_u32(vm);
                                 uint32_t old_page_count = vm->memory_len / wasm_page_size;
                                 uint32_t new_len = vm->memory_len + page_count * wasm_page_size;
-                                if (new_len > vm->memory_len) {
+                                if (new_len > max_memory) {
                                     vm_push_i32(vm, -1);
                                 } else {
                                     vm->memory_len = new_len;
@@ -3299,21 +3295,21 @@ static void vm_run(struct VirtualMachine *vm) {
                             {
                                 uint32_t rhs = vm_pop_u32(vm);
                                 uint32_t lhs = vm_pop_u32(vm);
-                                vm_push_u32(vm, lhs << rhs);
+                                vm_push_u32(vm, lhs << (rhs & 0x1f));
                             }
                             break;
                         case WasmOp_i32_shr_s:
                             {
                                 uint32_t rhs = vm_pop_u32(vm);
                                 int32_t lhs = vm_pop_i32(vm);
-                                vm_push_i32(vm, lhs >> rhs);
+                                vm_push_i32(vm, lhs >> (rhs & 0x1f));
                             }
                             break;
                         case WasmOp_i32_shr_u:
                             {
                                 uint32_t rhs = vm_pop_u32(vm);
                                 uint32_t lhs = vm_pop_u32(vm);
-                                vm_push_u32(vm, lhs >> rhs);
+                                vm_push_u32(vm, lhs >> (rhs & 0x1f));
                             }
                             break;
                         case WasmOp_i32_rotl:
@@ -3426,35 +3422,35 @@ static void vm_run(struct VirtualMachine *vm) {
                             {
                                 uint64_t rhs = vm_pop_u64(vm);
                                 uint64_t lhs = vm_pop_u64(vm);
-                                vm_push_u64(vm, lhs << rhs);
+                                vm_push_u64(vm, lhs << (rhs & 0x3f));
                             }
                             break;
                         case WasmOp_i64_shr_s:
                             {
                                 uint64_t rhs = vm_pop_u64(vm);
                                 int64_t lhs = vm_pop_i64(vm);
-                                vm_push_i64(vm, lhs >> rhs);
+                                vm_push_i64(vm, lhs >> (rhs & 0x3f));
                             }
                             break;
                         case WasmOp_i64_shr_u:
                             {
                                 uint64_t rhs = vm_pop_u64(vm);
                                 uint64_t lhs = vm_pop_u64(vm);
-                                vm_push_u64(vm, lhs >> rhs);
+                                vm_push_u64(vm, lhs >> (rhs & 0x3f));
                             }
                             break;
                         case WasmOp_i64_rotl:
                             {
                                 uint64_t rhs = vm_pop_u64(vm);
                                 uint64_t lhs = vm_pop_u64(vm);
-                                vm_push_u64(vm, rotl64(lhs, rhs ));
+                                vm_push_u64(vm, rotl64(lhs, rhs));
                             }
                             break;
                         case WasmOp_i64_rotr:
                             {
                                 uint64_t rhs = vm_pop_u64(vm);
                                 uint64_t lhs = vm_pop_u64(vm);
-                                vm_push_u64(vm, rotr64(lhs, rhs ));
+                                vm_push_u64(vm, rotr64(lhs, rhs));
                             }
                             break;
 
@@ -3900,6 +3896,7 @@ int main(int argc, char **argv) {
             i += 1;
 
             info->param_count = read32_uleb128(mod.ptr, &i);
+            if (info->param_count > 32) panic("found a type with over 32 parameters");
             info->param_types = 0;
             for (uint32_t param_i = 0; param_i < info->param_count; param_i += 1) {
                 int64_t param_type = read64_ileb128(mod.ptr, &i);
@@ -4176,7 +4173,7 @@ int main(int argc, char **argv) {
 
             struct TypeInfo *type_info = &vm.types[func->type_idx];
             func->locals_count = 0;
-            func->local_types = arena_alloc(sizeof(uint32_t) * ((type_info->param_count + func->locals_count + 31) / 32));
+            func->local_types = malloc(sizeof(uint32_t) * ((type_info->param_count + func->locals_count + 31) / 32));
             func->local_types[0] = type_info->param_types;
 
             for (uint32_t local_sets_count = read32_uleb128(mod.ptr, &code_i);
@@ -4187,7 +4184,7 @@ int main(int argc, char **argv) {
                 uint32_t i = type_info->param_count + func->locals_count;
                 func->locals_count += set_count;
                 if ((type_info->param_count + func->locals_count + 31) / 32 > (i + 31) / 32)
-                    func->local_types = arena_realloc(func->local_types, sizeof(uint32_t) * ((type_info->param_count + func->locals_count + 31) / 32));
+                    func->local_types = realloc(func->local_types, sizeof(uint32_t) * ((type_info->param_count + func->locals_count + 31) / 32));
                 for (; i < type_info->param_count + func->locals_count; i += 1)
                     switch (local_type) {
                         case -1: case -3: bs_unset(func->local_types, i); break;
@@ -4196,6 +4193,7 @@ int main(int argc, char **argv) {
                     }
             }
 
+            //fprintf(stderr, "set up func %u with pc %u:%u\n", func->type_idx, pc.opcode, pc.operand);
             func->entry_pc = pc;
             vm_decodeCode(&vm, func, &code_i, &pc);
             if (code_i != code_begin + size) panic("bad code size");
