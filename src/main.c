@@ -698,13 +698,14 @@ static enum wasi_errno_t to_wasi_err(int err) {
 static enum wasi_errno_t wasi_args_sizes_get(struct VirtualMachine *vm,
     uint32_t argc, uint32_t argv_buf_size)
 {
-    panic("TODO implement wasi_args_sizes_get");
-    //write_u32_le(vm->memory[argc..][0..4], @intCast(u32, vm->args.len));
-    //var buf_size: usize = 0;
-    //for (vm->args) |arg| {
-    //    buf_size += mem.span(arg).len + 1;
-    //}
-    //write_u32_le(vm->memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
+    uint32_t args_len = 0;
+    size_t buf_size = 0;
+    while (vm->args[args_len]) {
+        buf_size += strlen(vm->args[args_len]) + 1;
+        args_len += 1;
+    }
+    write_u32_le(vm->memory + argc, args_len);
+    write_u32_le(vm->memory + argv_buf_size, buf_size);
     return WASI_ESUCCESS;
 }
 
