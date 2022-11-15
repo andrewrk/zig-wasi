@@ -1745,15 +1745,34 @@ static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
 }
 
 static void vm_br_void(struct VirtualMachine *vm) {
-    panic("TODO implement vm_br_void");
+    uint32_t stack_adjust = vm->operands[vm->pc.operand];
+
+    vm->stack_top -= stack_adjust;
+
+    vm->pc.opcode = vm->operands[vm->pc.operand + 1];
+    vm->pc.operand = vm->operands[vm->pc.operand + 2];
 }
 
 static void vm_br_u32(struct VirtualMachine *vm) {
-    panic("TODO implement vm_br_u32");
+    uint32_t stack_adjust = vm->operands[vm->pc.operand];
+
+    uint32_t result = vm_pop_u32(vm);
+    vm->stack_top -= stack_adjust;
+    vm_push_u32(vm, result);
+
+    vm->pc.opcode = vm->operands[vm->pc.operand + 1];
+    vm->pc.operand = vm->operands[vm->pc.operand + 2];
 }
 
 static void vm_br_u64(struct VirtualMachine *vm) {
-    panic("TODO implement vm_br_u64");
+    uint32_t stack_adjust = vm->operands[vm->pc.operand];
+
+    uint64_t result = vm_pop_u64(vm);
+    vm->stack_top -= stack_adjust;
+    vm_push_u64(vm, result);
+
+    vm->pc.opcode = vm->operands[vm->pc.operand + 1];
+    vm->pc.operand = vm->operands[vm->pc.operand + 2];
 }
 
 static void vm_return_void(struct VirtualMachine *vm) {
