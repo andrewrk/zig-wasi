@@ -136,8 +136,9 @@ static uint64_t rotr64(uint64_t n, unsigned c) {
 static void *arena_alloc(size_t n) {
     void *ptr = malloc(n);
     if (!ptr) panic("out of memory");
-    // TODO this is debugging only
-    memset(ptr, 0xaa, n);
+#ifndef NDEBUG
+    memset(ptr, 0xaa, n); // to match the zig version
+#endif
     return ptr;
 }
 
@@ -153,7 +154,7 @@ static bool bs_isSet(const uint32_t *bitset, uint32_t index) {
     return (bitset[index >> 5] >> (index & 0x1f)) & 1;
 }
 static void bs_set(uint32_t *bitset, uint32_t index) {
-    bitset[index >> 5] |=  ((uint32_t)1 << (index & 0x1f));
+    bitset[index >> 5] |= ((uint32_t)1 << (index & 0x1f));
 }
 static void bs_unset(uint32_t *bitset, uint32_t index) {
     bitset[index >> 5] &= ~((uint32_t)1 << (index & 0x1f));
@@ -1187,6 +1188,9 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
     static uint32_t stack_types[1 << (12 - 3)];
 
     static struct Label labels[1 << 9];
+#ifndef NDEBUG
+    memset(labels, 0xaa, sizeof(struct Label) * (1 << 9)); // to match the zig version
+#endif
     uint32_t label_i = 0;
     labels[label_i].opcode = WasmOp_block;
     labels[label_i].stack_depth = stack_depth;
@@ -1199,7 +1203,8 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
         enum WasmPrefixedOp prefixed_opcode;
         if (opcode == WasmOp_prefixed) prefixed_opcode = read32_uleb128(mod_ptr, code_i);
 
-        fprintf(stderr, "decodeCode opcode=0x%x pc=%u:%u\n", opcode, pc->opcode, pc->operand);
+        //fprintf(stderr, "decodeCode opcode=0x%x pc=%u:%u\n", opcode, pc->opcode, pc->operand);
+        //struct ProgramCounter old_pc = *pc;
 
         uint32_t initial_stack_depth = stack_depth;
         if (unreachable_depth == 0) {
@@ -1689,11 +1694,16 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                         label->type_info.param_count = 0;
                         label->type_info.param_types = 0;
                         label->type_info.result_count = block_type != -0x40;
-                        label->type_info.result_types = 0;
                         switch (block_type) {
-                            case -0x40: break;
-                            case -1: case -3: bs_unset(&label->type_info.param_types, 0); break;
-                            case -2: case -4:   bs_set(&label->type_info.param_types, 0); break;
+                            case -0x40:
+                            case -1:
+                            case -3:
+                                label->type_info.result_types = 0;
+                                break;
+                            case -2:
+                            case -4:
+                                label->type_info.result_types = UINT32_MAX;
+                                break;
                             default: panic("unexpected param type");
                         }
                     } else {
@@ -1724,7 +1734,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             break;
 
             case WasmOp_else:
-            {
+            if (unreachable_depth <= 1) {
                 struct Label *label = &labels[label_i];
                 assert(label->opcode == WasmOp_if);
                 label->opcode = WasmOp_else;
@@ -1736,9 +1746,12 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                         break;
 
                         case 1:
-                        switch ((int)Label_operandType(label, 0)) {
-                            case false: opcodes[pc->opcode] = Op_br_32; break;
-                            case  true: opcodes[pc->opcode] = Op_br_64; break;
+                        //fprintf(stderr, "label_i=%u operand_type=%d\n",
+                        //        label_i, Label_operandType(label, 0));
+                        if (Label_operandType(label, 0)) {
+                            opcodes[pc->opcode] = Op_br_64;
+                        } else {
+                            opcodes[pc->opcode] = Op_br_32;
                         }
                         break;
 
@@ -1754,7 +1767,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                 operands[label->extra.else_ref + 0] = pc->opcode;
                 operands[label->extra.else_ref + 1] = pc->operand;
                 stack_depth = label->stack_depth + label->type_info.param_count;
-            };
+            }
             break;
 
             case WasmOp_end:
@@ -1845,7 +1858,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                         }
                         break;
 
-                        default: panic("unexpected opcode");
+                        default: panic("unreachable");
                     }
                     pc->opcode += 1;
                     operands[pc->operand + 0] = stack_depth - operand_count - label->stack_depth;
@@ -1931,7 +1944,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             break;
 
             case WasmOp_return:
-            {
+            if (unreachable_depth <= 1) {
                 uint32_t operand_count = Label_operandCount(&labels[0]);
                 switch (operand_count) {
                     case 0:
@@ -2201,9 +2214,11 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             break;
 
             default:
-            opcodes[pc->opcode + 0] = Op_wasm;
-            opcodes[pc->opcode + 1] = opcode;
-            pc->opcode += 2;
+            if (unreachable_depth == 0) {
+                opcodes[pc->opcode + 0] = Op_wasm;
+                opcodes[pc->opcode + 1] = opcode;
+                pc->opcode += 2;
+            }
             break;
 
             case WasmOp_prefixed:
@@ -2260,6 +2275,13 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             default:
             break;
         }
+
+        //for (uint32_t i = old_pc.opcode; i < pc->opcode; i += 1) {
+        //    fprintf(stderr, "decoded opcode[%u] = %u\n", i, opcodes[i]);
+        //}
+        //for (uint32_t i = old_pc.operand; i < pc->operand; i += 1) {
+        //    fprintf(stderr, "decoded operand[%u] = %u\n", i, operands[i]);
+        //}
     }
 }
 
@@ -2557,9 +2579,9 @@ static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
     uint32_t fn_idx = fn_id - vm->imports_len;
     struct Function *func = &vm->functions[fn_idx];
 
-    struct TypeInfo *type_info = &vm->types[func->type_idx];
-    fprintf(stderr, "enter fn_id: %u, param_count: %u, result_count: %u, locals_count: %u\n",
-        fn_id, type_info->param_count, type_info->result_count, func->locals_count);
+    //struct TypeInfo *type_info = &vm->types[func->type_idx];
+    //fprintf(stderr, "enter fn_id: %u, param_count: %u, result_count: %u, locals_count: %u\n",
+    //    fn_id, type_info->param_count, type_info->result_count, func->locals_count);
 
     // Push zeroed locals to stack
     memset(vm->stack + vm->stack_top, 0, func->locals_count * sizeof(uint64_t));
@@ -2643,10 +2665,10 @@ static void vm_run(struct VirtualMachine *vm) {
     for (;;) {
         enum Op op = opcodes[pc->opcode];
         pc->opcode += 1;
-        if (vm->stack_top > 0) {
-            fprintf(stderr, "stack[%u]=%lx pc=%u:%u, op=%u\n", 
-                vm->stack_top - 1, vm->stack[vm->stack_top - 1], pc->opcode, pc->operand, op);
-        }
+        //if (vm->stack_top > 0) {
+        //    fprintf(stderr, "stack[%u]=%lx pc=%u:%u, op=%u\n", 
+        //        vm->stack_top - 1, vm->stack[vm->stack_top - 1], pc->opcode, pc->operand, op);
+        //}
         switch (op) {
             case Op_unreachable:
                 panic("unreachable reached");
@@ -2881,7 +2903,7 @@ static void vm_run(struct VirtualMachine *vm) {
             case Op_wasm:
                 {
                     enum WasmOp wasm_op = opcodes[pc->opcode];
-                    fprintf(stderr, "op2=%x\n", wasm_op);
+                    //fprintf(stderr, "op2=%x\n", wasm_op);
                     pc->opcode += 1;
                     switch (wasm_op) {
                         case WasmOp_unreachable:
@@ -4287,6 +4309,9 @@ int main(int argc, char **argv) {
     }
 
     struct VirtualMachine vm;
+#ifndef NDEBUG
+    memset(&vm, 0xaa, sizeof(struct VirtualMachine)); // to match the zig version
+#endif
     vm.stack = arena_alloc(sizeof(uint64_t) * 10000000),
     vm.mod_ptr = mod.ptr;
     vm.opcodes = arena_alloc(2000000);
@@ -4337,7 +4362,7 @@ int main(int argc, char **argv) {
                     }
             }
 
-            fprintf(stderr, "set up func %u with pc %u:%u\n", func->type_idx, pc.opcode, pc.operand);
+            //fprintf(stderr, "set up func %u with pc %u:%u\n", func->type_idx, pc.opcode, pc.operand);
             func->entry_pc = pc;
             vm_decodeCode(&vm, func, &code_i, &pc);
             if (code_i != code_begin + size) panic("bad code size");
