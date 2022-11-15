@@ -900,19 +900,18 @@ static enum wasi_errno_t wasi_fd_pwrite(
     uint64_t offset, // wasi.filesize_t,
     uint32_t written_ptr // *usize
 ) {
-    panic("TODO implement wasi_fd_pwrite");
-    //int host_fd = to_host_fd(fd);
-    //var i: u32 = 0;
-    //var written: usize = 0;
-    //while (i < iovs_len) : (i += 1) {
-    //    uint32_t ptr = read_u32_le(vm->memory + iovs + i * 8 + 0);
-    //    uint32_t len = read_u32_le(vm->memory + iovs + i * 8 + 4);
-    //    const buf = vm->memory[ptr..][0..len];
-    //    const w = os.pwrite(host_fd, buf, offset + written) catch |err| return toWasiError(err);
-    //    written += w;
-    //    if (w != buf.len) break;
-    //}
-    //write_u32_le(vm->memory[written_ptr..][0..4], @intCast(u32, written));
+    int host_fd = to_host_fd(fd);
+    uint32_t i = 0;
+    size_t written = 0;
+    for (; i < iovs_len; i += 1) {
+        uint32_t ptr = read_u32_le(vm->memory + iovs + i * 8 + 0);
+        uint32_t len = read_u32_le(vm->memory + iovs + i * 8 + 4);
+        ssize_t w = pwrite(host_fd, vm->memory + ptr, len, offset + written);
+        if (w < 0) return to_wasi_err(errno);
+        written += w;
+        if (w != len) break;
+    }
+    write_u32_le(vm->memory + written_ptr, written);
     return WASI_ESUCCESS;
 }
 
@@ -1035,10 +1034,8 @@ static enum wasi_errno_t wasi_fd_filestat_get(struct VirtualMachine *vm, int32_t
 static enum wasi_errno_t wasi_fd_filestat_set_size( struct VirtualMachine *vm,
         int32_t fd, uint64_t size)
 {
-    panic("TODO implement wasi_fd_filestat_set_size");
-    //_ = vm;
-    //int host_fd = to_host_fd(fd);
-    //os.ftruncate(host_fd, size) catch |err| return toWasiError(err);
+    int host_fd = to_host_fd(fd);
+    if (ftruncate(host_fd, size) == -1) return to_wasi_err(errno);
     return WASI_ESUCCESS;
 }
 
@@ -1050,14 +1047,13 @@ static enum wasi_errno_t wasi_fd_filestat_set_size( struct VirtualMachine *vm,
 ///     fs_rights_inheriting: rights_t, u64
 /// };
 static enum wasi_errno_t wasi_fd_fdstat_get(struct VirtualMachine *vm, int32_t fd, uint32_t buf) {
-    panic("TODO implement wasi_fd_fdstat_get");
-    //int host_fd = to_host_fd(fd);
-    //const file = fs.File{ .handle = host_fd };
-    //const stat = file.stat() catch |err| return toWasiError(err);
-    //write_u16_le(vm->memory[buf + 0x00 ..][0..2], @enumToInt(to_wasi_filetype(stat.kind)));
-    //write_u16_le(vm->memory[buf + 0x02 ..][0..2], 0); // flags
-    //write_u64_le(vm->memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
-    //write_u64_le(vm->memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
+    int host_fd = to_host_fd(fd);
+    struct stat st;
+    if (fstat(host_fd, &st) == -1) return to_wasi_err(errno);
+    write_u16_le(vm->memory + buf + 0x00, to_wasi_filetype(st.st_mode));
+    write_u16_le(vm->memory + buf + 0x02, 0); // flags
+    write_u64_le(vm->memory + buf + 0x08, UINT64_MAX); // rights_base
+    write_u64_le(vm->memory + buf + 0x10, UINT64_MAX); // rights_inheriting
     return WASI_ESUCCESS;
 }
 
