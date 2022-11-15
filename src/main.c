@@ -1,11 +1,13 @@
 // TODO get rid of _GNU_SOURCE
 #define _GNU_SOURCE
+#include <assert.h>
+#include <limits.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -15,6 +17,34 @@
 static void panic(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     abort();
+}
+
+static uint32_t min_u32(uint32_t a, uint32_t b) {
+    return (a < b) ? a : b;
+}
+
+static uint32_t rotl32(uint32_t n, unsigned c) {
+    const unsigned mask = CHAR_BIT * sizeof(n) - 1;
+    c &= mask & 31;
+    return (n << c) | (n >> ((-c) & mask));
+}
+
+static uint32_t rotr32(uint32_t n, unsigned c) {
+    const unsigned mask = CHAR_BIT * sizeof(n) - 1;
+    c &= mask & 31;
+    return (n >> c) | (n << ((-c) & mask));
+}
+
+static uint64_t rotl64(uint64_t n, unsigned c) {
+    const unsigned mask = CHAR_BIT * sizeof(n) - 1;
+    c &= mask & 63;
+    return (n << c) | (n >> ((-c) & mask));
+}
+
+static uint64_t rotr64(uint64_t n, unsigned c) {
+    const unsigned mask = CHAR_BIT * sizeof(n) - 1;
+    c &= mask & 63;
+    return (n >> c) | (n << ((-c) & mask));
 }
 
 static void *arena_alloc(size_t n) {
@@ -94,9 +124,44 @@ static void add_preopen(int wasi_fd, const char *name, int host_fd) {
 
 static const size_t max_memory = 2ul * 1024ul * 1024ul * 1024ul; // 2 GiB
 
-static uint32_t read32le(const char *ptr) {
-    // TODO big endian
+static int16_t read_i16_le(const char *ptr) {
+    // TODO handle big endian host
+    return *((int16_t *)ptr);
+}
+
+static uint16_t read_u16_le(const char *ptr) {
+    // TODO handle big endian host
+    return *((uint16_t *)ptr);
+}
+
+static uint32_t read_i32_le(const char *ptr) {
+    // TODO handle big endian host
+    return *((int32_t *)ptr);
+}
+
+static uint32_t read_u32_le(const char *ptr) {
+    // TODO handle big endian host
     return *((uint32_t *)ptr);
+}
+
+static uint64_t read_u64_le(const char *ptr) {
+    // TODO handle big endian host
+    return *((uint64_t *)ptr);
+}
+
+static void write_u16_le(const char *ptr, uint16_t value) {
+    // TODO handle big endian host
+    *((uint16_t *)ptr) = value;
+}
+
+static void write_u32_le(const char *ptr, uint32_t value) {
+    // TODO handle big endian host
+    *((uint32_t *)ptr) = value;
+}
+
+static void write_u64_le(const char *ptr, uint64_t value) {
+    // TODO handle big endian host
+    *((uint64_t *)ptr) = value;
 }
 
 static uint32_t read32_uleb128(const char *ptr, uint32_t *i) {
@@ -1613,8 +1678,66 @@ static void vm_callImport(struct VirtualMachine *vm, struct Import imp) {
     panic("TODO implement callImport");
 }
 
-static void vm_push_u32(struct VirtualMachine *vm, uint32_t x) {
-    panic("TODO implement vm_push_u32");
+static void vm_push_u32(struct VirtualMachine *vm, uint32_t value) {
+    vm->stack[vm->stack_top] = value;
+    vm->stack_top += 1;
+}
+
+static void vm_push_i32(struct VirtualMachine *vm, int32_t value) {
+    return vm_push_u32(vm, value);
+}
+
+static void vm_push_u64(struct VirtualMachine *vm, uint64_t value) {
+    vm->stack[vm->stack_top] = value;
+    vm->stack_top += 1;
+}
+
+static void vm_push_i64(struct VirtualMachine *vm, int64_t value) {
+    return vm_push_u64(vm, value);
+}
+
+static void vm_push_f32(struct VirtualMachine *vm, float value) {
+    uint32_t integer;
+    memcpy(&integer, &value, 4);
+    return vm_push_u32(vm, integer);
+}
+
+static void vm_push_f64(struct VirtualMachine *vm, double value) {
+    uint64_t integer;
+    memcpy(&integer, &value, 8);
+    return vm_push_u64(vm, integer);
+}
+
+static uint32_t vm_pop_u32(struct VirtualMachine *vm) {
+    vm->stack_top -= 1;
+    return vm->stack[vm->stack_top];
+}
+
+static int32_t vm_pop_i32(struct VirtualMachine *vm) {
+    return vm_pop_u32(vm);
+}
+
+static uint64_t vm_pop_u64(struct VirtualMachine *vm) {
+    vm->stack_top -= 1;
+    return vm->stack[vm->stack_top];
+}
+
+static int64_t vm_pop_i64(struct VirtualMachine *vm) {
+    return vm_pop_u64(vm);
+}
+
+static float vm_pop_f32(struct VirtualMachine *vm) {
+    uint32_t integer = vm_pop_u32(vm);
+    float result;
+    memcpy(&result, &integer, 4);
+    return result;
+}
+
+static double vm_pop_f64(struct VirtualMachine *vm) {
+    uint32_t integer = vm_pop_u64(vm);
+    double result;
+    memcpy(&result, &integer, 8);
+    return result;
 }
 
 static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
@@ -1635,8 +1758,1406 @@ static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
     vm->pc = func->entry_pc;
 }
 
+static void vm_br_void(struct VirtualMachine *vm) {
+    panic("TODO implement vm_br_void");
+}
+
+static void vm_br_u32(struct VirtualMachine *vm) {
+    panic("TODO implement vm_br_u32");
+}
+
+static void vm_br_u64(struct VirtualMachine *vm) {
+    panic("TODO implement vm_br_u64");
+}
+
+static void vm_return_void(struct VirtualMachine *vm) {
+    panic("TODO implement vm_return_void");
+    //const ret_pc_offset = vm.operands[vm.pc.operand + 0];
+    //const stack_adjust = vm.operands[vm.pc.operand + 1];
+
+    //vm.pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
+    //vm.pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+
+    //const result = vm.pop(Result);
+    //vm.stack_top -= stack_adjust;
+    //vm.push(Result, result);
+}
+
+static void vm_return_u32(struct VirtualMachine *vm) {
+    panic("TODO implement vm_return_u32");
+    //const ret_pc_offset = vm.operands[vm.pc.operand + 0];
+    //const stack_adjust = vm.operands[vm.pc.operand + 1];
+
+    //vm.pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
+    //vm.pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+
+    //const result = vm.pop(Result);
+    //vm.stack_top -= stack_adjust;
+    //vm.push(Result, result);
+}
+
+static void vm_return_u64(struct VirtualMachine *vm) {
+    panic("TODO implement vm_return_u64");
+    //const ret_pc_offset = vm.operands[vm.pc.operand + 0];
+    //const stack_adjust = vm.operands[vm.pc.operand + 1];
+
+    //vm.pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
+    //vm.pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+
+    //const result = vm.pop(Result);
+    //vm.stack_top -= stack_adjust;
+    //vm.push(Result, result);
+}
+
 static void vm_run(struct VirtualMachine *vm) {
-    panic("TODO implement vm_run");
+    uint8_t *opcodes = vm->opcodes;
+    uint32_t *operands = vm->operands;
+    struct ProgramCounter *pc = &vm->pc;
+    for (;;) {
+        enum Op op = opcodes[pc->opcode];
+        pc->opcode += 1;
+        switch (op) {
+            case Op_unreachable: 
+                panic("unreachable reached");
+
+            case Op_br_void:
+                vm_br_void(vm);
+                break;
+
+            case Op_br_32:
+                vm_br_u32(vm);
+                break;
+
+            case Op_br_64:
+                vm_br_u64(vm);
+                break;
+
+            case Op_br_if_nez_void:
+                if (vm_pop_u32(vm) != 0) {
+                    vm_br_void(vm);
+                } else {
+                    pc->operand += 3;
+                }
+                break;
+
+            case Op_br_if_nez_32:
+                if (vm_pop_u32(vm) != 0) {
+                    vm_br_u32(vm);
+                } else {
+                    pc->operand += 3;
+                }
+                break;
+
+            case Op_br_if_nez_64:
+                if (vm_pop_u32(vm) != 0) {
+                    vm_br_u64(vm);
+                } else {
+                    pc->operand += 3;
+                }
+                break;
+
+            case Op_br_if_eqz_void:
+                if (vm_pop_u32(vm) == 0) {
+                    vm_br_void(vm);
+                } else {
+                    pc->operand += 3;
+                }
+                break;
+
+            case Op_br_if_eqz_32:
+                if (vm_pop_u32(vm) == 0) {
+                    vm_br_u32(vm);
+                } else {
+                    pc->operand += 3;
+                }
+                break;
+
+            case Op_br_if_eqz_64:
+                if (vm_pop_u32(vm) == 0) {
+                    vm_br_u64(vm);
+                } else {
+                    pc->operand += 3;
+                }
+                break;
+
+            case Op_br_table_void:
+                {
+                    uint32_t index = min_u32(vm_pop_u32(vm), operands[pc->operand]);
+                    pc->operand += 1 + index * 3;
+                    vm_br_void(vm);
+                }
+                break;
+
+            case Op_br_table_32:
+                {
+                    uint32_t index = min_u32(vm_pop_u32(vm), operands[pc->operand]);
+                    pc->operand += 1 + index * 3;
+                    vm_br_u32(vm);
+                }
+                break;
+
+            case Op_br_table_64:
+                {
+                    uint32_t index = min_u32(vm_pop_u32(vm), operands[pc->operand]);
+                    pc->operand += 1 + index * 3;
+                    vm_br_u64(vm);
+                }
+                break;
+
+            case Op_return_void:
+                vm_return_void(vm);
+                break;
+
+            case Op_return_32:
+                vm_return_u32(vm);
+                break;
+
+            case Op_return_64:
+                vm_return_u64(vm);
+                break;
+
+            case Op_call:
+                {
+                    uint32_t fn_id = operands[pc->operand];
+                    pc->operand += 1;
+                    vm_call(vm, fn_id);
+                }
+                break;
+
+            case Op_drop_32:
+            case Op_drop_64:
+                vm->stack_top -= 1;
+                break;
+
+            case Op_select_32:
+                {
+                    uint32_t c = vm_pop_u32(vm);
+                    uint32_t b = vm_pop_u32(vm);
+                    uint32_t a = vm_pop_u32(vm);
+                    uint32_t result = (c != 0) ? a : b;
+                    vm_push_u32(vm, result);
+                }
+                break;
+
+            case Op_select_64:
+                {
+                    uint32_t c = vm_pop_u32(vm);
+                    uint64_t b = vm_pop_u64(vm);
+                    uint64_t a = vm_pop_u64(vm);
+                    uint64_t result = (c != 0) ? a : b;
+                    vm_push_u64(vm, result);
+                }
+                break;
+
+            case Op_local_get_32:
+                {
+                    uint64_t *local = &vm->stack[vm->stack_top - operands[pc->operand]];
+                    pc->operand += 1;
+                    vm_push_u32(vm, *local);
+                }
+                break;
+
+            case Op_local_get_64:
+                {
+                    uint64_t *local = &vm->stack[vm->stack_top - operands[pc->operand]];
+                    pc->operand += 1;
+                    vm_push_u64(vm, *local);
+                }
+                break;
+
+            case Op_local_set_32:
+                {
+                    uint64_t *local = &vm->stack[vm->stack_top - operands[pc->operand]];
+                    pc->operand += 1;
+                    *local = vm_pop_u32(vm);
+                }
+                break;
+
+            case Op_local_set_64:
+                {
+                    uint64_t *local = &vm->stack[vm->stack_top - operands[pc->operand]];
+                    pc->operand += 1;
+                    *local = vm_pop_u64(vm);
+                }
+                break;
+
+            case Op_local_tee_32:
+            case Op_local_tee_64:
+                {
+                    uint64_t *local = &vm->stack[vm->stack_top - operands[pc->operand]];
+                    pc->operand += 1;
+                    *local = vm->stack[vm->stack_top - 1];
+                }
+                break;
+
+            case Op_global_get_0_32:
+                vm_push_u32(vm, vm->globals[0]);
+                break;
+
+            case Op_global_get_32:
+                {
+                    uint32_t idx = operands[pc->operand];
+                    pc->operand += 1;
+                    vm_push_u32(vm, vm->globals[idx]);
+                }
+                break;
+
+            case Op_global_set_0_32:
+                vm->globals[0] = vm_pop_u32(vm);
+                break;
+
+            case Op_global_set_32:
+                {
+                    uint32_t idx = operands[pc->operand];
+                    pc->operand += 1;
+                    vm->globals[idx] = vm_pop_u32(vm);
+                }
+                break;
+
+            case Op_wasm:
+                {
+                    enum WasmOp wasm_op = opcodes[pc->opcode];
+                    pc->opcode += 1;
+                    switch (wasm_op) {
+                        case WasmOp_unreachable:
+                        case WasmOp_nop:
+                        case WasmOp_block:
+                        case WasmOp_loop:
+                        case WasmOp_if:
+                        case WasmOp_else:
+                        case WasmOp_end:
+                        case WasmOp_br:
+                        case WasmOp_br_if:
+                        case WasmOp_br_table:
+                        case WasmOp_return:
+                        case WasmOp_call:
+                        case WasmOp_drop:
+                        case WasmOp_select:
+                        case WasmOp_local_get:
+                        case WasmOp_local_set:
+                        case WasmOp_local_tee:
+                        case WasmOp_global_get:
+                        case WasmOp_global_set:
+                        case WasmOp_prefixed:
+                            panic("not produced by decodeCode");
+                            break;
+
+                        case WasmOp_call_indirect:
+                            {
+                                uint32_t fn_id = vm->table[vm_pop_u32(vm)];
+                                vm_call(vm, fn_id);
+                            }
+                            break;
+                        case WasmOp_i32_load:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm_push_u32(vm, read_u32_le(vm->memory +offset));
+                            }
+                            break;
+                        case WasmOp_i64_load:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm_push_u64(vm, read_u64_le(vm->memory + offset));
+                            }
+                            break;
+                        case WasmOp_f32_load:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                uint32_t integer = read_u32_le(vm->memory + offset);
+                                vm_push_u32(vm, integer);
+                            }
+                            break;
+                        case WasmOp_f64_load:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                uint64_t integer = read_u64_le(vm->memory + offset);
+                                vm_push_u64(vm, integer);
+                            }
+                            break;
+                        case WasmOp_i32_load8_s:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm_push_i32(vm, (int8_t)vm->memory[offset]);
+                            }
+                            break;
+                        case WasmOp_i32_load8_u:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm_push_u32(vm, vm->memory[offset]);
+                            }
+                            break;
+                        case WasmOp_i32_load16_s:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                int16_t integer = read_i16_le(vm->memory + offset);
+                                vm_push_i32(vm, integer);
+                            }
+                            break;
+                        case WasmOp_i32_load16_u:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                uint16_t integer = read_u16_le(vm->memory + offset);
+                                vm_push_u32(vm, integer);
+                            }
+                            break;
+                        case WasmOp_i64_load8_s:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm_push_i64(vm, (int8_t)vm->memory[offset]);
+                            }
+                            break;
+                        case WasmOp_i64_load8_u:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm_push_u64(vm, vm->memory[offset]);
+                            }
+                            break;
+                        case WasmOp_i64_load16_s:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                int16_t integer = read_i16_le(vm->memory + offset);
+                                vm_push_i64(vm, integer);
+                            }
+                            break;
+                        case WasmOp_i64_load16_u:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                uint16_t integer = read_u16_le(vm->memory + offset);
+                                vm_push_u64(vm, integer);
+                            }
+                            break;
+                        case WasmOp_i64_load32_s:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                int32_t integer = read_i32_le(vm->memory + offset);
+                                vm_push_i64(vm, integer);
+                            }
+                            break;
+                        case WasmOp_i64_load32_u:
+                            {
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                uint32_t integer = read_u32_le(vm->memory + offset);
+                                vm_push_u64(vm, integer);
+                            }
+                            break;
+                        case WasmOp_i32_store:
+                            {
+                                uint32_t operand = vm_pop_u32(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                write_u32_le(vm->memory + offset, operand);
+                            }
+                            break;
+                        case WasmOp_i64_store:
+                            {
+                                uint64_t operand = vm_pop_u64(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                write_u64_le(vm->memory + offset, operand);
+                            }
+                            break;
+                        case WasmOp_f32_store:
+                            {
+                                uint32_t integer = vm_pop_u32(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                write_u32_le(vm->memory + offset, integer);
+                            }
+                            break;
+                        case WasmOp_f64_store:
+                            {
+                                uint64_t integer = vm_pop_u64(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                write_u64_le(vm->memory + offset, integer);
+                            }
+                            break;
+                        case WasmOp_i32_store8:
+                            {
+                                uint8_t small = vm_pop_u32(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm->memory[offset] = small;
+                            }
+                            break;
+                        case WasmOp_i32_store16:
+                            {
+                                uint16_t small = vm_pop_u32(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                write_u16_le(vm->memory + offset, small);
+                            }
+                            break;
+                        case WasmOp_i64_store8:
+                            {
+                                uint8_t operand = vm_pop_u64(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                vm->memory[offset] = operand;
+                            }
+                            break;
+                        case WasmOp_i64_store16:
+                            {
+                                uint16_t small = vm_pop_u64(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                write_u16_le(vm->memory + offset, small);
+                            }
+                            break;
+                        case WasmOp_i64_store32:
+                            {
+                                uint32_t small = vm_pop_u64(vm);
+                                uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
+                                pc->operand += 1;
+                                write_u32_le(vm->memory + offset, small);
+                            }
+                            break;
+                        case WasmOp_memory_size:
+                            {
+                                uint32_t page_count = vm->memory_len / wasm_page_size;
+                                vm_push_u32(vm, page_count);
+                            }
+                            break;
+                        case WasmOp_memory_grow:
+                            {
+                                uint32_t page_count = vm_pop_u32(vm);
+                                uint32_t old_page_count = vm->memory_len / wasm_page_size;
+                                uint32_t new_len = vm->memory_len + page_count * wasm_page_size;
+                                if (new_len > vm->memory_len) {
+                                    vm_push_i32(vm, -1);
+                                } else {
+                                    vm->memory_len = new_len;
+                                    vm_push_u32(vm, old_page_count);
+                                }
+                            }
+                            break;
+                        case WasmOp_i32_const:
+                            {
+                                uint32_t x = operands[pc->operand];
+                                pc->operand += 1;
+                                vm_push_i32(vm, x);
+                            }
+                            break;
+                        case WasmOp_i64_const:
+                            {
+                                uint64_t x = ((uint64_t)operands[pc->operand]) |
+                                    ((uint64_t)(operands[pc->operand + 1]) << 32);
+                                pc->operand += 2;
+                                vm_push_i64(vm, x);
+                            }
+                            break;
+                        case WasmOp_f32_const:
+                            {
+                                uint32_t x = operands[pc->operand];
+                                pc->operand += 1;
+                                vm_push_u32(vm, x);
+                            }
+                            break;
+                        case WasmOp_f64_const:
+                            {
+                                uint64_t x = ((uint64_t)operands[pc->operand]) |
+                                    (((uint64_t)operands[pc->operand + 1]) << 32);
+                                pc->operand += 2;
+                                vm_push_u64(vm, x);
+                            }
+                            break;
+                        case WasmOp_i32_eqz:
+                            {
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs == 0);
+                            }
+                            break;
+                        case WasmOp_i32_eq:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs == rhs);
+                            }
+                            break;
+                        case WasmOp_i32_ne:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs != rhs);
+                            }
+                            break;
+                        case WasmOp_i32_lt_s:
+                            {
+                                int32_t rhs = vm_pop_i32(vm);
+                                int32_t lhs = vm_pop_i32(vm);
+                                vm_push_u32(vm, lhs < rhs);
+                            }
+                            break;
+                        case WasmOp_i32_lt_u:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs < rhs);
+                            }
+                            break;
+                        case WasmOp_i32_gt_s:
+                            {
+                                int32_t rhs = vm_pop_i32(vm);
+                                int32_t lhs = vm_pop_i32(vm);
+                                vm_push_u32(vm, lhs > rhs);
+                            }
+                            break;
+                        case WasmOp_i32_gt_u:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs > rhs);
+                            }
+                            break;
+                        case WasmOp_i32_le_s:
+                            {
+                                int32_t rhs = vm_pop_i32(vm);
+                                int32_t lhs = vm_pop_i32(vm);
+                                vm_push_u32(vm, lhs <= rhs);
+                            }
+                            break;
+                        case WasmOp_i32_le_u:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs <= rhs);
+                            }
+                            break;
+                        case WasmOp_i32_ge_s:
+                            {
+                                int32_t rhs = vm_pop_i32(vm);
+                                int32_t lhs = vm_pop_i32(vm);
+                                vm_push_u32(vm, lhs >= rhs);
+                            }
+                            break;
+                        case WasmOp_i32_ge_u:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs >= rhs);
+                            }
+                            break;
+                        case WasmOp_i64_eqz:
+                            {
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u32(vm, lhs == 0);
+                            }
+                            break;
+                        case WasmOp_i64_eq:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u32(vm, lhs == rhs);
+                            }
+                            break;
+                        case WasmOp_i64_ne:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u32(vm, lhs != rhs);
+                            }
+                            break;
+                        case WasmOp_i64_lt_s:
+                            {
+                                int64_t rhs = vm_pop_i64(vm);
+                                int64_t lhs = vm_pop_i64(vm);
+                                vm_push_u32(vm, lhs < rhs);
+                            }
+                            break;
+                        case WasmOp_i64_lt_u:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u32(vm, lhs < rhs);
+                            }
+                            break;
+                        case WasmOp_i64_gt_s:
+                            {
+                                int64_t rhs = vm_pop_i64(vm);
+                                int64_t lhs = vm_pop_i64(vm);
+                                vm_push_u32(vm, lhs > rhs);
+                            }
+                            break;
+                        case WasmOp_i64_gt_u:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u32(vm, lhs > rhs);
+                            }
+                            break;
+                        case WasmOp_i64_le_s:
+                            {
+                                int64_t rhs = vm_pop_i64(vm);
+                                int64_t lhs = vm_pop_i64(vm);
+                                vm_push_u32(vm, lhs <= rhs);
+                            }
+                            break;
+                        case WasmOp_i64_le_u:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u32(vm, lhs <= rhs);
+                            }
+                            break;
+                        case WasmOp_i64_ge_s:
+                            {
+                                int64_t rhs = vm_pop_i64(vm);
+                                int64_t lhs = vm_pop_i64(vm);
+                                vm_push_u32(vm, lhs >= rhs);
+                            }
+                            break;
+                        case WasmOp_i64_ge_u:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u32(vm, lhs >= rhs);
+                            }
+                            break;
+                        case WasmOp_f32_eq:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_u32(vm, lhs == rhs);
+                            }
+                            break;
+                        case WasmOp_f32_ne:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_u32(vm, lhs != rhs);
+                            }
+                            break;
+                        case WasmOp_f32_lt:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_u32(vm, lhs < rhs);
+                            }
+                            break;
+                        case WasmOp_f32_gt:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_u32(vm, lhs > rhs);
+                            }
+                            break;
+                        case WasmOp_f32_le:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_u32(vm, lhs <= rhs);
+                            }
+                            break;
+                        case WasmOp_f32_ge:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_u32(vm, lhs >= rhs);
+                            }
+                            break;
+                        case WasmOp_f64_eq:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_u32(vm, lhs == rhs);
+                            }
+                            break;
+                        case WasmOp_f64_ne:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_u32(vm, lhs != rhs);
+                            }
+                            break;
+                        case WasmOp_f64_lt:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_u32(vm, lhs <= rhs);
+                            }
+                            break;
+                        case WasmOp_f64_gt:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_u32(vm, lhs > rhs);
+                            }
+                            break;
+                        case WasmOp_f64_le:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_u32(vm, lhs <= rhs);
+                            }
+                            break;
+                        case WasmOp_f64_ge:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_u32(vm, lhs >= rhs);
+                            }
+                            break;
+
+                        case WasmOp_i32_clz:
+                            {
+                                uint32_t operand = vm_pop_u32(vm);
+                                uint32_t result = (operand == 0) ? 32 : __builtin_clz(operand);
+                                vm_push_u32(vm, result);
+                            }
+                            break;
+                        case WasmOp_i32_ctz:
+                            {
+                                uint32_t operand = vm_pop_u32(vm);
+                                uint32_t result = (operand == 0) ? 32 : __builtin_ctz(operand);
+                                vm_push_u32(vm, result);
+                            }
+                            break;
+                        case WasmOp_i32_popcnt:
+                            {
+                                uint32_t operand = vm_pop_u32(vm);
+                                uint32_t result = __builtin_popcount(operand);
+                                vm_push_u32(vm, result);
+                            }
+                            break;
+                        case WasmOp_i32_add:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs + rhs);
+                            }
+                            break;
+                        case WasmOp_i32_sub:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs - rhs);
+                            }
+                            break;
+                        case WasmOp_i32_mul:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs * rhs);
+                            }
+                            break;
+                        case WasmOp_i32_div_s:
+                            {
+                                int32_t rhs = vm_pop_i32(vm);
+                                int32_t lhs = vm_pop_i32(vm);
+                                vm_push_i32(vm, lhs / rhs);
+                            }
+                            break;
+                        case WasmOp_i32_div_u:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs / rhs);
+                            }
+                            break;
+                        case WasmOp_i32_rem_s:
+                            {
+                                int32_t rhs = vm_pop_i32(vm);
+                                int32_t lhs = vm_pop_i32(vm);
+                                vm_push_i32(vm, lhs % rhs);
+                            }
+                            break;
+                        case WasmOp_i32_rem_u:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs % rhs);
+                            }
+                            break;
+                        case WasmOp_i32_and:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs & rhs);
+                            }
+                            break;
+                        case WasmOp_i32_or:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs | rhs);
+                            }
+                            break;
+                        case WasmOp_i32_xor:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs ^ rhs);
+                            }
+                            break;
+                        case WasmOp_i32_shl:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs << rhs);
+                            }
+                            break;
+                        case WasmOp_i32_shr_s:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                int32_t lhs = vm_pop_i32(vm);
+                                vm_push_i32(vm, lhs >> rhs);
+                            }
+                            break;
+                        case WasmOp_i32_shr_u:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, lhs >> rhs);
+                            }
+                            break;
+                        case WasmOp_i32_rotl:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, rotl32(lhs, rhs));
+                            }
+                            break;
+                        case WasmOp_i32_rotr:
+                            {
+                                uint32_t rhs = vm_pop_u32(vm);
+                                uint32_t lhs = vm_pop_u32(vm);
+                                vm_push_u32(vm, rotr32(lhs, rhs ));
+                            }
+                            break;
+
+                        case WasmOp_i64_clz:
+                            {
+                                uint64_t operand = vm_pop_u64(vm);
+                                uint64_t result = (operand == 0) ? 64 : __builtin_clzll(operand);
+                                vm_push_u64(vm, result);
+                            }
+                            break;
+                        case WasmOp_i64_ctz:
+                            {
+                                uint64_t operand = vm_pop_u64(vm);
+                                uint64_t result = (operand == 0) ? 64 : __builtin_ctzll(operand);
+                                vm_push_u64(vm, result);
+                            }
+                            break;
+                        case WasmOp_i64_popcnt:
+                            {
+                                uint64_t operand = vm_pop_u64(vm);
+                                uint64_t result = __builtin_popcountll(operand);
+                                vm_push_u64(vm, result);
+                            }
+                            break;
+                        case WasmOp_i64_add:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs + rhs);
+                            }
+                            break;
+                        case WasmOp_i64_sub:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs - rhs);
+                            }
+                            break;
+                        case WasmOp_i64_mul:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs * rhs);
+                            }
+                            break;
+                        case WasmOp_i64_div_s:
+                            {
+                                int64_t rhs = vm_pop_i64(vm);
+                                int64_t lhs = vm_pop_i64(vm);
+                                vm_push_i64(vm, lhs / rhs);
+                            }
+                            break;
+                        case WasmOp_i64_div_u:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs / rhs);
+                            }
+                            break;
+                        case WasmOp_i64_rem_s:
+                            {
+                                int64_t rhs = vm_pop_i64(vm);
+                                int64_t lhs = vm_pop_i64(vm);
+                                vm_push_i64(vm, lhs % rhs);
+                            }
+                            break;
+                        case WasmOp_i64_rem_u:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs % rhs);
+                            }
+                            break;
+                        case WasmOp_i64_and:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs & rhs);
+                            }
+                            break;
+                        case WasmOp_i64_or:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs | rhs);
+                            }
+                            break;
+                        case WasmOp_i64_xor:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs ^ rhs);
+                            }
+                            break;
+                        case WasmOp_i64_shl:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs << rhs);
+                            }
+                            break;
+                        case WasmOp_i64_shr_s:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                int64_t lhs = vm_pop_i64(vm);
+                                vm_push_i64(vm, lhs >> rhs);
+                            }
+                            break;
+                        case WasmOp_i64_shr_u:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, lhs >> rhs);
+                            }
+                            break;
+                        case WasmOp_i64_rotl:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, rotl64(lhs, rhs ));
+                            }
+                            break;
+                        case WasmOp_i64_rotr:
+                            {
+                                uint64_t rhs = vm_pop_u64(vm);
+                                uint64_t lhs = vm_pop_u64(vm);
+                                vm_push_u64(vm, rotr64(lhs, rhs ));
+                            }
+                            break;
+
+                        case WasmOp_f32_abs:
+                            {
+                                vm_push_f32(vm, fabsf(vm_pop_f32(vm)));
+                            }
+                            break;
+                        case WasmOp_f32_neg:
+                            {
+                                vm_push_f32(vm, -vm_pop_f32(vm));
+                            }
+                            break;
+                        case WasmOp_f32_ceil:
+                            {
+                                vm_push_f32(vm, ceilf(vm_pop_f32(vm)));
+                            }
+                            break;
+                        case WasmOp_f32_floor:
+                            {
+                                vm_push_f32(vm, floorf(vm_pop_f32(vm)));
+                            }
+                            break;
+                        case WasmOp_f32_trunc:
+                            {
+                                vm_push_f32(vm, truncf(vm_pop_f32(vm)));
+                            }
+                            break;
+                        case WasmOp_f32_nearest:
+                            {
+                                vm_push_f32(vm, roundf(vm_pop_f32(vm)));
+                            }
+                            break;
+                        case WasmOp_f32_sqrt:
+                            {
+                                vm_push_f32(vm, sqrtf(vm_pop_f32(vm)));
+                            }
+                            break;
+                        case WasmOp_f32_add:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_f32(vm, lhs + rhs);
+                            }
+                            break;
+                        case WasmOp_f32_sub:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_f32(vm, lhs - rhs);
+                            }
+                            break;
+                        case WasmOp_f32_mul:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_f32(vm, lhs * rhs);
+                            }
+                            break;
+                        case WasmOp_f32_div:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_f32(vm, lhs / rhs);
+                            }
+                            break;
+                        case WasmOp_f32_min:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_f32(vm, (lhs < rhs) ? lhs : rhs);
+                            }
+                            break;
+                        case WasmOp_f32_max:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_f32(vm, (lhs > rhs) ? lhs : rhs);
+                            }
+                            break;
+                        case WasmOp_f32_copysign:
+                            {
+                                float rhs = vm_pop_f32(vm);
+                                float lhs = vm_pop_f32(vm);
+                                vm_push_f32(vm, copysignf(lhs, rhs));
+                            }
+                            break;
+                        case WasmOp_f64_abs:
+                            {
+                                vm_push_f64(vm, fabs(vm_pop_f64(vm)));
+                            }
+                            break;
+                        case WasmOp_f64_neg:
+                            {
+                                vm_push_f64(vm, -vm_pop_f64(vm));
+                            }
+                            break;
+                        case WasmOp_f64_ceil:
+                            {
+                                vm_push_f64(vm, ceil(vm_pop_f64(vm)));
+                            }
+                            break;
+                        case WasmOp_f64_floor:
+                            {
+                                vm_push_f64(vm, floor(vm_pop_f64(vm)));
+                            }
+                            break;
+                        case WasmOp_f64_trunc:
+                            {
+                                vm_push_f64(vm, trunc(vm_pop_f64(vm)));
+                            }
+                            break;
+                        case WasmOp_f64_nearest:
+                            {
+                                vm_push_f64(vm, round(vm_pop_f64(vm)));
+                            }
+                            break;
+                        case WasmOp_f64_sqrt:
+                            {
+                                vm_push_f64(vm, sqrt(vm_pop_f64(vm)));
+                            }
+                            break;
+                        case WasmOp_f64_add:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_f64(vm, lhs + rhs);
+                            }
+                            break;
+                        case WasmOp_f64_sub:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_f64(vm, lhs - rhs);
+                            }
+                            break;
+                        case WasmOp_f64_mul:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_f64(vm, lhs * rhs);
+                            }
+                            break;
+                        case WasmOp_f64_div:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_f64(vm, lhs / rhs);
+                            }
+                            break;
+                        case WasmOp_f64_min:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_f64(vm, (lhs < rhs) ? lhs : rhs);
+                            }
+                            break;
+                        case WasmOp_f64_max:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_f64(vm, (lhs > rhs) ? lhs : rhs);
+                            }
+                            break;
+                        case WasmOp_f64_copysign:
+                            {
+                                double rhs = vm_pop_f64(vm);
+                                double lhs = vm_pop_f64(vm);
+                                vm_push_f64(vm, copysign(lhs, rhs));
+                            }
+                            break;
+
+                        case WasmOp_i32_wrap_i64:
+                            {
+                                uint64_t operand = vm_pop_u64(vm);
+                                vm_push_u32(vm, operand);
+                            }
+                            break;
+                        case WasmOp_i32_trunc_f32_s:
+                            {
+                                float operand = vm_pop_f32(vm);
+                                vm_push_i32(vm, truncf(operand));
+                            }
+                            break;
+                        case WasmOp_i32_trunc_f32_u:
+                            {
+                                float operand = vm_pop_f32(vm);
+                                vm_push_u32(vm, truncf(operand));
+                            }
+                            break;
+                        case WasmOp_i32_trunc_f64_s:
+                            {
+                                double operand = vm_pop_f64(vm);
+                                vm_push_i32(vm, trunc(operand));
+                            }
+                            break;
+                        case WasmOp_i32_trunc_f64_u:
+                            {
+                                double operand = vm_pop_f64(vm);
+                                vm_push_u32(vm, trunc(operand));
+                            }
+                            break;
+                        case WasmOp_i64_extend_i32_s:
+                            {
+                                int32_t operand = vm_pop_i32(vm);
+                                vm_push_i64(vm, operand);
+                            }
+                            break;
+                        case WasmOp_i64_extend_i32_u:
+                            {
+                                uint64_t operand = vm_pop_u64(vm);
+                                vm_push_u64(vm, operand);
+                            }
+                            break;
+                        case WasmOp_i64_trunc_f32_s:
+                            {
+                                float operand = vm_pop_f32(vm);
+                                vm_push_i64(vm, truncf(operand));
+                            }
+                            break;
+                        case WasmOp_i64_trunc_f32_u:
+                            {
+                                float operand = vm_pop_f32(vm);
+                                vm_push_u64(vm, truncf(operand));
+                            }
+                            break;
+                        case WasmOp_i64_trunc_f64_s:
+                            {
+                                double operand = vm_pop_f64(vm);
+                                vm_push_i64(vm, trunc(operand));
+                            }
+                            break;
+                        case WasmOp_i64_trunc_f64_u:
+                            {
+                                double operand = vm_pop_f64(vm);
+                                vm_push_u64(vm, trunc(operand));
+                            }
+                            break;
+                        case WasmOp_f32_convert_i32_s:
+                            {
+                                vm_push_f32(vm, vm_pop_i32(vm));
+                            }
+                            break;
+                        case WasmOp_f32_convert_i32_u:
+                            {
+                                vm_push_f32(vm, vm_pop_u32(vm));
+                            }
+                            break;
+                        case WasmOp_f32_convert_i64_s:
+                            {
+                                vm_push_f32(vm, vm_pop_i64(vm));
+                            }
+                            break;
+                        case WasmOp_f32_convert_i64_u:
+                            {
+                                vm_push_f32(vm, vm_pop_u64(vm));
+                            }
+                            break;
+                        case WasmOp_f32_demote_f64:
+                            {
+                                vm_push_f32(vm, vm_pop_f64(vm));
+                            }
+                            break;
+                        case WasmOp_f64_convert_i32_s:
+                            {
+                                vm_push_f64(vm, vm_pop_i32(vm));
+                            }
+                            break;
+                        case WasmOp_f64_convert_i32_u:
+                            {
+                                vm_push_f64(vm, vm_pop_u32(vm));
+                            }
+                            break;
+                        case WasmOp_f64_convert_i64_s:
+                            {
+                                vm_push_f64(vm, vm_pop_i64(vm));
+                            }
+                            break;
+                        case WasmOp_f64_convert_i64_u:
+                            {
+                                vm_push_f64(vm, vm_pop_u64(vm));
+                            }
+                            break;
+                        case WasmOp_f64_promote_f32:
+                            {
+                                vm_push_f64(vm, vm_pop_f32(vm));
+                            }
+                            break;
+
+                        case WasmOp_i32_reinterpret_f32:
+                        case WasmOp_i64_reinterpret_f64:
+                        case WasmOp_f32_reinterpret_i32:
+                        case WasmOp_f64_reinterpret_i64:
+                            break;
+
+                        case WasmOp_i32_extend8_s:
+                            {
+                                int8_t operand = vm_pop_i32(vm);
+                                vm_push_i32(vm, operand);
+                            }
+                            break;
+                        case WasmOp_i32_extend16_s:
+                            {
+                                int16_t operand = vm_pop_i32(vm);
+                                vm_push_i32(vm, operand);
+                            }
+                            break;
+                        case WasmOp_i64_extend8_s:
+                            {
+                                int8_t operand = vm_pop_i64(vm);
+                                vm_push_i64(vm, operand);
+                            }
+                            break;
+                        case WasmOp_i64_extend16_s:
+                            {
+                                int16_t operand = vm_pop_i64(vm);
+                                vm_push_i64(vm, operand);
+                            }
+                            break;
+                        case WasmOp_i64_extend32_s:
+                            {
+                                int32_t operand = vm_pop_i64(vm);
+                                vm_push_i64(vm, operand);
+                            }
+                            break;
+
+                        default:
+                            panic("unreachable");
+                    }
+                    break;
+
+                    case Op_wasm_prefixed:
+                    {
+                        enum WasmPrefixedOp wasm_prefixed_op = opcodes[pc->opcode];
+                        pc->opcode += 1;
+                        switch (wasm_prefixed_op) {
+                            case WasmPrefixedOp_i32_trunc_sat_f32_s:
+                                panic("unreachable");
+                            case WasmPrefixedOp_i32_trunc_sat_f32_u:
+                                panic("unreachable");
+                            case WasmPrefixedOp_i32_trunc_sat_f64_s:
+                                panic("unreachable");
+                            case WasmPrefixedOp_i32_trunc_sat_f64_u:
+                                panic("unreachable");
+                            case WasmPrefixedOp_i64_trunc_sat_f32_s:
+                                panic("unreachable");
+                            case WasmPrefixedOp_i64_trunc_sat_f32_u:
+                                panic("unreachable");
+                            case WasmPrefixedOp_i64_trunc_sat_f64_s:
+                                panic("unreachable");
+                            case WasmPrefixedOp_i64_trunc_sat_f64_u:
+                                panic("unreachable");
+                            case WasmPrefixedOp_memory_init:
+                                panic("unreachable");
+                            case WasmPrefixedOp_data_drop:
+                                panic("unreachable");
+
+                            case WasmPrefixedOp_memory_copy:
+                                {
+                                    uint32_t n = vm_pop_u32(vm);
+                                    uint32_t src = vm_pop_u32(vm);
+                                    uint32_t dest = vm_pop_u32(vm);
+                                    assert(dest + n <= vm->memory_len);
+                                    assert(src + n <= vm->memory_len);
+                                    assert(src + n <= dest || dest + n <= src); // overlapping
+                                    memcpy(vm->memory + dest, vm->memory + src, n);
+                                }
+                                break;
+
+                            case WasmPrefixedOp_memory_fill:
+                                {
+                                    uint32_t n = vm_pop_u32(vm);
+                                    uint8_t value = vm_pop_u32(vm);
+                                    uint32_t dest = vm_pop_u32(vm);
+                                    assert(dest + n <= vm->memory_len);
+                                    memset(vm->memory + dest, value, n);
+                                }
+                                break;
+
+                            case WasmPrefixedOp_table_init: panic("unreachable");
+                            case WasmPrefixedOp_elem_drop: panic("unreachable");
+                            case WasmPrefixedOp_table_copy: panic("unreachable");
+                            case WasmPrefixedOp_table_grow: panic("unreachable");
+                            case WasmPrefixedOp_table_size: panic("unreachable");
+                            case WasmPrefixedOp_table_fill: panic("unreachable");
+                            default: panic("unreachable");
+                        }
+                    }
+                    break;
+
+                    default:
+                    panic("unreachable");
+                }
+        }
+    }
 }
 
 int main(int argc, char **argv) {
@@ -1668,7 +3189,7 @@ int main(int argc, char **argv) {
     }
     i += 4;
 
-    uint32_t version = read32le(mod.ptr + i);
+    uint32_t version = read_u32_le(mod.ptr + i);
     i += 4;
     if (version != 1) panic("bad wasm version");
 
