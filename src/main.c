@@ -1817,7 +1817,7 @@ static void vm_run(struct VirtualMachine *vm) {
         enum Op op = opcodes[pc->opcode];
         pc->opcode += 1;
         switch (op) {
-            case Op_unreachable: 
+            case Op_unreachable:
                 panic("unreachable reached");
 
             case Op_br_void:
@@ -3497,7 +3497,7 @@ int main(int argc, char **argv) {
                 int64_t local_type = read64_ileb128(mod.ptr, &code_i);
 
                 uint32_t i = type_info->param_count + func->locals_count;
-                func->local_types += set_count;
+                func->locals_count += set_count;
                 if ((type_info->param_count + func->locals_count + 31) / 32 > (i + 31) / 32)
                     func->local_types = arena_realloc(func->local_types, sizeof(uint32_t) * ((type_info->param_count + func->locals_count + 31) / 32));
                 for (; i < type_info->param_count + func->locals_count; i += 1)
