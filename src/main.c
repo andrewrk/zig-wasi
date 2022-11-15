@@ -1799,42 +1799,37 @@ static void vm_br_u64(struct VirtualMachine *vm) {
 }
 
 static void vm_return_void(struct VirtualMachine *vm) {
-    panic("TODO implement vm_return_void");
-    //const ret_pc_offset = vm.operands[vm.pc.operand + 0];
-    //const stack_adjust = vm.operands[vm.pc.operand + 1];
+    uint32_t ret_pc_offset = vm->operands[vm->pc.operand + 0];
+    uint32_t stack_adjust = vm->operands[vm->pc.operand + 1];
 
-    //vm.pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
-    //vm.pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+    vm->pc.opcode = vm->stack[vm->stack_top - ret_pc_offset];
+    vm->pc.operand = vm->stack[vm->stack_top - ret_pc_offset + 1];
 
-    //const result = vm.pop(Result);
-    //vm.stack_top -= stack_adjust;
-    //vm.push(Result, result);
+    vm->stack_top -= stack_adjust;
 }
 
 static void vm_return_u32(struct VirtualMachine *vm) {
-    panic("TODO implement vm_return_u32");
-    //const ret_pc_offset = vm.operands[vm.pc.operand + 0];
-    //const stack_adjust = vm.operands[vm.pc.operand + 1];
+    uint32_t ret_pc_offset = vm->operands[vm->pc.operand + 0];
+    uint32_t stack_adjust = vm->operands[vm->pc.operand + 1];
 
-    //vm.pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
-    //vm.pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+    vm->pc.opcode = vm->stack[vm->stack_top - ret_pc_offset];
+    vm->pc.operand = vm->stack[vm->stack_top - ret_pc_offset + 1];
 
-    //const result = vm.pop(Result);
-    //vm.stack_top -= stack_adjust;
-    //vm.push(Result, result);
+    uint32_t result = vm_pop_u32(vm);
+    vm->stack_top -= stack_adjust;
+    vm_push_u32(vm, result);
 }
 
 static void vm_return_u64(struct VirtualMachine *vm) {
-    panic("TODO implement vm_return_u64");
-    //const ret_pc_offset = vm.operands[vm.pc.operand + 0];
-    //const stack_adjust = vm.operands[vm.pc.operand + 1];
+    uint32_t ret_pc_offset = vm->operands[vm->pc.operand + 0];
+    uint32_t stack_adjust = vm->operands[vm->pc.operand + 1];
 
-    //vm.pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
-    //vm.pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+    vm->pc.opcode = vm->stack[vm->stack_top - ret_pc_offset];
+    vm->pc.operand = vm->stack[vm->stack_top - ret_pc_offset + 1];
 
-    //const result = vm.pop(Result);
-    //vm.stack_top -= stack_adjust;
-    //vm.push(Result, result);
+    uint64_t result = vm_pop_u64(vm);
+    vm->stack_top -= stack_adjust;
+    vm_push_u64(vm, result);
 }
 
 static void vm_run(struct VirtualMachine *vm) {
