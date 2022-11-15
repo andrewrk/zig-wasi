@@ -433,6 +433,8 @@ const Opcode = enum {
     global_set_32,
     const_32,
     const_64,
+    add_32,
+    and_32,
     wasm,
     wasm_prefixed,
 };
@@ -1020,7 +1022,12 @@ const VirtualMachine = struct {
                     opcodes[pc.opcode] = @enumToInt(Opcode.@"unreachable");
                     pc.opcode += 1;
                 },
-                .nop => {},
+                .nop,
+                .i32_reinterpret_f32,
+                .i64_reinterpret_f64,
+                .f32_reinterpret_i32,
+                .f64_reinterpret_i64,
+                => {},
                 .block, .loop, .@"if" => |opc| {
                     const block_type = try leb.readILEB128(i33, reader);
                     if (unreachable_depth == 0) {
@@ -1241,6 +1248,23 @@ const VirtualMachine = struct {
                     operands[pc.operand + 1] = stack_depth;
                     pc.operand += 2;
                 },
+                .select,
+                .drop,
+                => |opc| if (unreachable_depth == 0) {
+                    opcodes[pc.opcode] = @enumToInt(switch (stack_types.isSet(stack_depth)) {
+                        false => switch (opc) {
+                            .select => Opcode.select_32,
+                            .drop => Opcode.drop_32,
+                            else => unreachable,
+                        },
+                        true => switch (opc) {
+                            .select => Opcode.select_64,
+                            .drop => Opcode.drop_64,
+                            else => unreachable,
+                        },
+                    });
+                    pc.opcode += 1;
+                },
                 .local_get,
                 .local_set,
                 .local_tee,
@@ -1375,21 +1399,12 @@ const VirtualMachine = struct {
                         pc.operand += 2;
                     }
                 },
-                .select,
-                .drop,
-                => |opc| if (unreachable_depth == 0) {
-                    opcodes[pc.opcode] = @enumToInt(switch (stack_types.isSet(stack_depth)) {
-                        false => switch (opc) {
-                            .select => Opcode.select_32,
-                            .drop => Opcode.drop_32,
-                            else => unreachable,
-                        },
-                        true => switch (opc) {
-                            .select => Opcode.select_64,
-                            .drop => Opcode.drop_64,
-                            else => unreachable,
-                        },
-                    });
+                .i32_add => {
+                    opcodes[pc.opcode] = @enumToInt(Opcode.add_32);
+                    pc.opcode += 1;
+                },
+                .i32_and => {
+                    opcodes[pc.opcode] = @enumToInt(Opcode.and_32);
                     pc.opcode += 1;
                 },
                 else => if (unreachable_depth == 0) {
@@ -1873,6 +1888,16 @@ const VirtualMachine = struct {
                     pc.operand += 2;
                     vm.push(i64, @bitCast(i64, x));
                 },
+                .add_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs +% rhs);
+                },
+                .and_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs & rhs);
+                },
                 .wasm => {
                     const wasm_op = @intToEnum(wasm.Opcode, opcodes[pc.opcode]);
                     cpu_log.debug("op2={s}", .{@tagName(wasm_op)});
@@ -1901,6 +1926,12 @@ const VirtualMachine = struct {
                         .i64_const,
                         .f32_const,
                         .f64_const,
+                        .i32_add,
+                        .i32_and,
+                        .i32_reinterpret_f32,
+                        .i64_reinterpret_f64,
+                        .f32_reinterpret_i32,
+                        .f64_reinterpret_i64,
                         .prefixed,
                         => @panic("not produced by decodeCode"),
 
@@ -2236,11 +2267,6 @@ const VirtualMachine = struct {
                             const operand = vm.pop(u32);
                             vm.push(u32, @popCount(operand));
                         },
-                        .i32_add => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs +% rhs);
-                        },
                         .i32_sub => {
                             const rhs = vm.pop(u32);
                             const lhs = vm.pop(u32);
@@ -2270,11 +2296,6 @@ const VirtualMachine = struct {
                             const rhs = vm.pop(u32);
                             const lhs = vm.pop(u32);
                             vm.push(u32, @rem(lhs, rhs));
-                        },
-                        .i32_and => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs & rhs);
                         },
                         .i32_or => {
                             const rhs = vm.pop(u32);
@@ -2586,18 +2607,6 @@ const VirtualMachine = struct {
                         },
                         .f64_promote_f32 => {
                             vm.push(f64, vm.pop(f32));
-                        },
-                        .i32_reinterpret_f32 => {
-                            vm.push(u32, @bitCast(u32, vm.pop(f32)));
-                        },
-                        .i64_reinterpret_f64 => {
-                            vm.push(u64, @bitCast(u64, vm.pop(f64)));
-                        },
-                        .f32_reinterpret_i32 => {
-                            vm.push(f32, @bitCast(f32, vm.pop(u32)));
-                        },
-                        .f64_reinterpret_i64 => {
-                            vm.push(f64, @bitCast(f64, vm.pop(u64)));
                         },
 
                         .i32_extend8_s => {

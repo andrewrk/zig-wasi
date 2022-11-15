@@ -284,6 +284,8 @@ enum Op {
     Op_global_set_32,
     Op_const_32,
     Op_const_64,
+    Op_add_32,
+    Op_and_32,
     Op_wasm,
     Op_wasm_prefixed,
 };
@@ -1099,6 +1101,10 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             break;
 
             case WasmOp_nop:
+            case WasmOp_i32_reinterpret_f32:
+            case WasmOp_i64_reinterpret_f64:
+            case WasmOp_f32_reinterpret_i32:
+            case WasmOp_f64_reinterpret_i64:
             break;
 
             case WasmOp_block:
@@ -1385,6 +1391,42 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             }
             break;
 
+            case WasmOp_select:
+            case WasmOp_drop:
+            if (unreachable_depth == 0) {
+                switch ((int)bs_isSet(stack_types, stack_depth)) {
+                    case false:
+                    switch (opcode) {
+                        case WasmOp_select:
+                        opcodes[pc->opcode] = Op_select_32;
+                        break;
+
+                        case WasmOp_drop:
+                        opcodes[pc->opcode] = Op_drop_32;
+                        break;
+
+                        default: panic("unexpected opcode");
+                    }
+                    break;
+
+                    case true:
+                    switch (opcode) {
+                        case WasmOp_select:
+                        opcodes[pc->opcode] = Op_select_64;
+                        break;
+
+                        case WasmOp_drop:
+                        opcodes[pc->opcode] = Op_drop_64;
+                        break;
+
+                        default: panic("unexpected opcode");
+                    }
+                    break;
+                }
+                pc->opcode += 1;
+            }
+            break;
+
             case WasmOp_local_get:
             case WasmOp_local_set:
             case WasmOp_local_tee:
@@ -1584,40 +1626,14 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             }
             break;
 
-            case WasmOp_select:
-            case WasmOp_drop:
-            if (unreachable_depth == 0) {
-                switch ((int)bs_isSet(stack_types, stack_depth)) {
-                    case false:
-                    switch (opcode) {
-                        case WasmOp_select:
-                        opcodes[pc->opcode] = Op_select_32;
-                        break;
+            case WasmOp_i32_add:
+            opcodes[pc->opcode] = Op_add_32;
+            pc->opcode += 1;
+            break;
 
-                        case WasmOp_drop:
-                        opcodes[pc->opcode] = Op_drop_32;
-                        break;
-
-                        default: panic("unexpected opcode");
-                    }
-                    break;
-
-                    case true:
-                    switch (opcode) {
-                        case WasmOp_select:
-                        opcodes[pc->opcode] = Op_select_64;
-                        break;
-
-                        case WasmOp_drop:
-                        opcodes[pc->opcode] = Op_drop_64;
-                        break;
-
-                        default: panic("unexpected opcode");
-                    }
-                    break;
-                }
-                pc->opcode += 1;
-            }
+            case WasmOp_i32_and:
+            opcodes[pc->opcode] = Op_and_32;
+            pc->opcode += 1;
             break;
 
             default:
@@ -2054,6 +2070,22 @@ static void vm_run(struct VirtualMachine *vm) {
                 }
                 break;
 
+            case Op_add_32:
+                {
+                    uint32_t rhs = vm_pop_u32(vm);
+                    uint32_t lhs = vm_pop_u32(vm);
+                    vm_push_u32(vm, lhs + rhs);
+                }
+                break;
+
+            case Op_and_32:
+                {
+                    uint32_t rhs = vm_pop_u32(vm);
+                    uint32_t lhs = vm_pop_u32(vm);
+                    vm_push_u32(vm, lhs & rhs);
+                }
+                break;
+
             case Op_wasm:
                 {
                     enum WasmOp wasm_op = opcodes[pc->opcode];
@@ -2082,6 +2114,12 @@ static void vm_run(struct VirtualMachine *vm) {
                         case WasmOp_i64_const:
                         case WasmOp_f32_const:
                         case WasmOp_f64_const:
+                        case WasmOp_i32_add:
+                        case WasmOp_i32_and:
+                        case WasmOp_i32_reinterpret_f32:
+                        case WasmOp_i64_reinterpret_f64:
+                        case WasmOp_f32_reinterpret_i32:
+                        case WasmOp_f64_reinterpret_i64:
                         case WasmOp_prefixed:
                             panic("not produced by decodeCode");
                             break;
@@ -2547,13 +2585,6 @@ static void vm_run(struct VirtualMachine *vm) {
                                 vm_push_u32(vm, result);
                             }
                             break;
-                        case WasmOp_i32_add:
-                            {
-                                uint32_t rhs = vm_pop_u32(vm);
-                                uint32_t lhs = vm_pop_u32(vm);
-                                vm_push_u32(vm, lhs + rhs);
-                            }
-                            break;
                         case WasmOp_i32_sub:
                             {
                                 uint32_t rhs = vm_pop_u32(vm);
@@ -2594,13 +2625,6 @@ static void vm_run(struct VirtualMachine *vm) {
                                 uint32_t rhs = vm_pop_u32(vm);
                                 uint32_t lhs = vm_pop_u32(vm);
                                 vm_push_u32(vm, lhs % rhs);
-                            }
-                            break;
-                        case WasmOp_i32_and:
-                            {
-                                uint32_t rhs = vm_pop_u32(vm);
-                                uint32_t lhs = vm_pop_u32(vm);
-                                vm_push_u32(vm, lhs & rhs);
                             }
                             break;
                         case WasmOp_i32_or:
@@ -3064,12 +3088,6 @@ static void vm_run(struct VirtualMachine *vm) {
                             {
                                 vm_push_f64(vm, vm_pop_f32(vm));
                             }
-                            break;
-
-                        case WasmOp_i32_reinterpret_f32:
-                        case WasmOp_i64_reinterpret_f64:
-                        case WasmOp_f32_reinterpret_i32:
-                        case WasmOp_f64_reinterpret_i64:
                             break;
 
                         case WasmOp_i32_extend8_s:
