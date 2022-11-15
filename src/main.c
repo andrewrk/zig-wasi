@@ -708,17 +708,19 @@ static enum wasi_errno_t wasi_args_sizes_get(struct VirtualMachine *vm,
 static enum wasi_errno_t wasi_args_get(struct VirtualMachine *vm,
     uint32_t argv, uint32_t argv_buf) 
 {
-    panic("TODO implement wasi_args_get");
-    //var argv_buf_i: usize = 0;
-    //for (vm->args) |arg, arg_i| {
-    //    // Write the arg to the buffer.
-    //    const argv_ptr = argv_buf + argv_buf_i;
-    //    const arg_len = mem.span(arg).len + 1;
-    //    mem.copy(u8, vm->memory[argv_buf + argv_buf_i ..], arg[0..arg_len]);
-    //    argv_buf_i += arg_len;
+    uint32_t argv_buf_i = 0;
+    uint32_t arg_i = 0;
+    for (;; arg_i += 1) {
+        const char *arg = vm->args[arg_i];
+        if (!arg) break;
+        // Write the arg to the buffer.
+        uint32_t argv_ptr = argv_buf + argv_buf_i;
+        uint32_t arg_len = strlen(arg) + 1;
+        memcpy(vm->memory + argv_buf + argv_buf_i, arg, arg_len);
+        argv_buf_i += arg_len;
 
-    //    write_u32_le(vm->memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
-    //}
+        write_u32_le(vm->memory + argv + 4 * arg_i , argv_ptr);
+    }
     return WASI_ESUCCESS;
 }
 
