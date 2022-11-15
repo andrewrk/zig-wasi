@@ -1,6 +1,7 @@
 // TODO get rid of _GNU_SOURCE
 #define _GNU_SOURCE
 #include <assert.h>
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdbool.h>
@@ -200,6 +201,16 @@ static void add_preopen(int wasi_fd, const char *name, int host_fd) {
     preopens_buffer[preopens_len].name = name;
     preopens_buffer[preopens_len].name_len = strlen(name);
     preopens_len += 1;
+}
+
+static const struct Preopen *find_preopen(int32_t wasi_fd) {
+    for (size_t i = 0; i < preopens_len; i += 1) {
+        const struct Preopen *preopen = &preopens_buffer[i];
+        if (preopen->wasi_fd == wasi_fd) {
+            return preopen;
+        }
+    }
+    return NULL;
 }
 
 static const size_t max_memory = 2ul * 1024ul * 1024ul * 1024ul; // 2 GiB
@@ -659,17 +670,41 @@ struct VirtualMachine {
     uint32_t *table;
 };
 
+static int to_host_fd(int32_t wasi_fd) {
+    const struct Preopen *preopen = find_preopen(wasi_fd);
+    if (!preopen) return wasi_fd;
+    return preopen->host_fd;
+}
+
+static enum wasi_errno_t to_wasi_err(int err) {
+    switch (err) {
+        case EACCES: return WASI_EACCES;
+        case EDQUOT: return WASI_EDQUOT;
+        case EIO: return WASI_EIO;
+        case EFBIG: return WASI_EFBIG;
+        case ENOSPC: return WASI_ENOSPC;
+        case EPIPE: return WASI_EPIPE;
+        case EBADF: return WASI_EBADF;
+        case ENOMEM: return WASI_ENOMEM;
+        case ENOENT: return WASI_ENOENT;
+        case EEXIST: return WASI_EEXIST;
+        default:
+        fprintf(stderr, "unexpected errno: %s\n", strerror(err));
+        abort();
+    };
+}
+
 /// fn args_sizes_get(argc: *usize, argv_buf_size: *usize) errno_t;
 static enum wasi_errno_t wasi_args_sizes_get(struct VirtualMachine *vm,
     uint32_t argc, uint32_t argv_buf_size)
 {
     panic("TODO implement wasi_args_sizes_get");
-    //mem.writeIntLittle(u32, vm.memory[argc..][0..4], @intCast(u32, vm.args.len));
+    //write_u32_le(vm->memory[argc..][0..4], @intCast(u32, vm->args.len));
     //var buf_size: usize = 0;
-    //for (vm.args) |arg| {
+    //for (vm->args) |arg| {
     //    buf_size += mem.span(arg).len + 1;
     //}
-    //mem.writeIntLittle(u32, vm.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
+    //write_u32_le(vm->memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
     return WASI_ESUCCESS;
 }
 
@@ -679,14 +714,14 @@ static enum wasi_errno_t wasi_args_get(struct VirtualMachine *vm,
 {
     panic("TODO implement wasi_args_get");
     //var argv_buf_i: usize = 0;
-    //for (vm.args) |arg, arg_i| {
+    //for (vm->args) |arg, arg_i| {
     //    // Write the arg to the buffer.
     //    const argv_ptr = argv_buf + argv_buf_i;
     //    const arg_len = mem.span(arg).len + 1;
-    //    mem.copy(u8, vm.memory[argv_buf + argv_buf_i ..], arg[0..arg_len]);
+    //    mem.copy(u8, vm->memory[argv_buf + argv_buf_i ..], arg[0..arg_len]);
     //    argv_buf_i += arg_len;
 
-    //    mem.writeIntLittle(u32, vm.memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
+    //    write_u32_le(vm->memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
     //}
     return WASI_ESUCCESS;
 }
@@ -696,7 +731,7 @@ static enum wasi_errno_t wasi_random_get(struct VirtualMachine *vm,
     uint32_t buf, uint32_t buf_len) 
 {
     panic("TODO implement wasi_random_get");
-    //const host_buf = vm.memory[buf..][0..buf_len];
+    //const host_buf = vm->memory[buf..][0..buf_len];
     //std.crypto.random.bytes(host_buf);
     return WASI_ESUCCESS;
 }
@@ -711,8 +746,8 @@ static enum wasi_errno_t wasi_fd_prestat_get(struct VirtualMachine *vm,
 {
     panic("TODO implement wasi_fd_prestat_get");
     //const preopen = findPreopen(fd) orelse return .BADF;
-    //mem.writeIntLittle(u32, vm.memory[buf + 0 ..][0..4], 0);
-    //mem.writeIntLittle(u32, vm.memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
+    //write_u32_le(vm->memory[buf + 0 ..][0..4], 0);
+    //write_u32_le(vm->memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
     return WASI_ESUCCESS;
 }
 
@@ -723,7 +758,7 @@ static enum wasi_errno_t wasi_fd_prestat_dir_name(struct VirtualMachine *vm,
     panic("TODO implement wasi_fd_prestat_dir_name");
     //const preopen = findPreopen(fd) orelse return .BADF;
     //assert(path_len == preopen.name.len);
-    //mem.copy(u8, vm.memory[path..], preopen.name);
+    //mem.copy(u8, vm->memory[path..], preopen.name);
     return WASI_ESUCCESS;
 }
 
@@ -748,15 +783,15 @@ static enum wasi_errno_t wasi_fd_read(
     //var i: u32 = 0;
     //var total_read: usize = 0;
     //while (i < iovs_len) : (i += 1) {
-    //    const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
-    //    const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
-    //    const buf = vm.memory[ptr..][0..len];
+    //    uint32_t ptr = read_u32_le(vm->memory + iovs + i * 8 + 0);
+    //    uint32_t len = read_u32_le(vm->memory + iovs + i * 8 + 4);
+    //    const buf = vm->memory[ptr..][0..len];
     //    const read = os.read(host_fd, buf) catch |err| return toWasiError(err);
     //    trace_log.debug("read {d} bytes out of {d}", .{ read, buf.len });
     //    total_read += read;
     //    if (read != buf.len) break;
     //}
-    //mem.writeIntLittle(u32, vm.memory[nread..][0..4], @intCast(u32, total_read));
+    //write_u32_le(vm->memory[nread..][0..4], @intCast(u32, total_read));
     return WASI_ESUCCESS;
 }
 
@@ -765,20 +800,20 @@ static enum wasi_errno_t wasi_fd_read(
 ///     base: [*]const u8,
 ///     len: usize,
 /// };
-static enum wasi_errno_t wasi_fd_write(struct VirtualMachine *vm, int32_t fd, uint32_t iovs, uint32_t iovs_len, uint32_t nwritten) {
-    panic("TODO implement wasi_fd_write");
-    //const host_fd = toHostFd(fd);
-    //var i: u32 = 0;
-    //var total_written: usize = 0;
-    //while (i < iovs_len) : (i += 1) {
-    //    const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
-    //    const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
-    //    const buf = vm.memory[ptr..][0..len];
-    //    const written = os.write(host_fd, buf) catch |err| return toWasiError(err);
-    //    total_written += written;
-    //    if (written != buf.len) break;
-    //}
-    //mem.writeIntLittle(u32, vm.memory[nwritten..][0..4], @intCast(u32, total_written));
+static enum wasi_errno_t wasi_fd_write(struct VirtualMachine *vm,
+        int32_t fd, uint32_t iovs, uint32_t iovs_len, uint32_t nwritten)
+{
+    int host_fd = to_host_fd(fd);
+    size_t total_written = 0;
+    for (uint32_t i = 0; i < iovs_len; i += 1) {
+        uint32_t ptr = read_u32_le(vm->memory + iovs + i * 8 + 0);
+        uint32_t len = read_u32_le(vm->memory + iovs + i * 8 + 4);
+        ssize_t written = write(host_fd, vm->memory + ptr, len);
+        if (written < 0) return to_wasi_err(errno);
+        total_written += written;
+        if (written != len) break;
+    }
+    write_u32_le(vm->memory + nwritten, total_written);
     return WASI_ESUCCESS;
 }
 
@@ -795,14 +830,14 @@ static enum wasi_errno_t wasi_fd_pwrite(
     //var i: u32 = 0;
     //var written: usize = 0;
     //while (i < iovs_len) : (i += 1) {
-    //    const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
-    //    const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
-    //    const buf = vm.memory[ptr..][0..len];
+    //    uint32_t ptr = read_u32_le(vm->memory + iovs + i * 8 + 0);
+    //    uint32_t len = read_u32_le(vm->memory + iovs + i * 8 + 4);
+    //    const buf = vm->memory[ptr..][0..len];
     //    const w = os.pwrite(host_fd, buf, offset + written) catch |err| return toWasiError(err);
     //    written += w;
     //    if (w != buf.len) break;
     //}
-    //mem.writeIntLittle(u32, vm.memory[written_ptr..][0..4], @intCast(u32, written));
+    //write_u32_le(vm->memory[written_ptr..][0..4], @intCast(u32, written));
     return WASI_ESUCCESS;
 }
 
@@ -830,7 +865,7 @@ static enum wasi_errno_t wasi_path_open(
     uint32_t fd
 ) {
     panic("TODO implement wasi_path_open");
-    //const sub_path = vm.memory[path..][0..path_len];
+    //const sub_path = vm->memory[path..][0..path_len];
     //const host_fd = toHostFd(dirfd);
     //var flags: u32 = @as(u32, if (oflags & wasi.O.CREAT != 0) os.O.CREAT else 0) |
     //    @as(u32, if (oflags & wasi.O.DIRECTORY != 0) os.O.DIRECTORY else 0) |
@@ -851,7 +886,7 @@ static enum wasi_errno_t wasi_path_open(
     //}
     //const mode = 0o644;
     //const res_fd = os.openat(host_fd, sub_path, flags, mode) catch |err| return toWasiError(err);
-    //mem.writeIntLittle(i32, vm.memory[fd..][0..4], res_fd);
+    //mem.writeIntLittle(i32, vm->memory[fd..][0..4], res_fd);
     return WASI_ESUCCESS;
 }
 
@@ -864,7 +899,7 @@ static enum wasi_errno_t wasi_path_filestat_get(
     uint32_t buf // *filestat_t
 ) {
     panic("TODO implement wasi_path_filestat_get");
-    //const sub_path = vm.memory[path..][0..path_len];
+    //const sub_path = vm->memory[path..][0..path_len];
     //const host_fd = toHostFd(fd);
     //const dir: fs.Dir = .{ .fd = host_fd };
     //const stat = dir.statFile(sub_path) catch |err| return toWasiError(err);
@@ -875,7 +910,7 @@ static enum wasi_errno_t wasi_path_filestat_get(
 /// extern fn path_create_directory(fd: fd_t, path: [*]const u8, path_len: usize) errno_t;
 static enum wasi_errno_t wasi_path_create_directory(struct VirtualMachine *vm, int32_t fd, uint32_t path, uint32_t path_len) {
     panic("TODO implement wasi_path_create_directory");
-    //const sub_path = vm.memory[path..][0..path_len];
+    //const sub_path = vm->memory[path..][0..path_len];
     //trace_log.debug("wasi_path_create_directory fd={d} path={s}", .{ fd, sub_path });
     //const host_fd = toHostFd(fd);
     //const dir: fs.Dir = .{ .fd = host_fd };
@@ -893,8 +928,8 @@ static enum wasi_errno_t wasi_path_rename(
     uint32_t new_path_len // usize
 ) {
     panic("TODO implement wasi_path_rename");
-    //const old_path = vm.memory[old_path_ptr..][0..old_path_len];
-    //const new_path = vm.memory[new_path_ptr..][0..new_path_len];
+    //const old_path = vm->memory[old_path_ptr..][0..old_path_len];
+    //const new_path = vm->memory[new_path_ptr..][0..new_path_len];
     //trace_log.debug("wasi_path_rename old_fd={d} old_path={s} new_fd={d} new_path={s}", .{
     //    old_fd, old_path, new_fd, new_path,
     //});
@@ -936,10 +971,10 @@ static enum wasi_errno_t wasi_fd_fdstat_get(struct VirtualMachine *vm, int32_t f
     //const host_fd = toHostFd(fd);
     //const file = fs.File{ .handle = host_fd };
     //const stat = file.stat() catch |err| return toWasiError(err);
-    //mem.writeIntLittle(u16, vm.memory[buf + 0x00 ..][0..2], @enumToInt(toWasiFileType(stat.kind)));
-    //mem.writeIntLittle(u16, vm.memory[buf + 0x02 ..][0..2], 0); // flags
-    //mem.writeIntLittle(u64, vm.memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
-    //mem.writeIntLittle(u64, vm.memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
+    //mem.writeIntLittle(u16, vm->memory[buf + 0x00 ..][0..2], @enumToInt(toWasiFileType(stat.kind)));
+    //mem.writeIntLittle(u16, vm->memory[buf + 0x02 ..][0..2], 0); // flags
+    //mem.writeIntLittle(u64, vm->memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
+    //mem.writeIntLittle(u64, vm->memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
     return WASI_ESUCCESS;
 }
 
@@ -952,21 +987,21 @@ static enum wasi_errno_t wasi_clock_time_get(struct VirtualMachine *vm,
     //_ = precision;
     //_ = clock_id;
     //const wasi_ts = toWasiTimestamp(std.time.nanoTimestamp());
-    //mem.writeIntLittle(u64, vm.memory[timestamp..][0..8], wasi_ts);
+    //mem.writeIntLittle(u64, vm->memory[timestamp..][0..8], wasi_ts);
     return WASI_ESUCCESS;
 }
 
 ///pub extern "wasi_snapshot_preview1" fn debug(string: [*:0]const u8, x: u64) void;
 void wasi_debug(struct VirtualMachine *vm, uint32_t text, uint64_t n) {
     panic("TODO implement wasi_debug");
-    //const s = mem.sliceTo(vm.memory[text..], 0);
+    //const s = mem.sliceTo(vm->memory[text..], 0);
     //trace_log.debug("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
 }
 
 /// pub extern "wasi_snapshot_preview1" fn debug_slice(ptr: [*]const u8, len: usize) void;
 void wasi_debug_slice(struct VirtualMachine *vm, uint32_t ptr, uint32_t len) {
     panic("TODO implement wasi_debug_slice");
-    //const s = vm.memory[ptr..][0..len];
+    //const s = vm->memory[ptr..][0..len];
     //trace_log.debug("wasi_debug_slice: '{s}'", .{s});
 }
 
@@ -2747,7 +2782,7 @@ static void vm_run(struct VirtualMachine *vm) {
                             {
                                 uint32_t offset = operands[pc->operand] + vm_pop_u32(vm);
                                 pc->operand += 1;
-                                vm_push_u32(vm, read_u32_le(vm->memory +offset));
+                                vm_push_u32(vm, read_u32_le(vm->memory + offset));
                             }
                             break;
                         case WasmOp_i64_load:
