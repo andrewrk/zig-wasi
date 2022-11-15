@@ -57,11 +57,12 @@ fn main2(args: []const [*:0]const u8) !void {
     );
 
     const zig_lib_dir_path = args[1];
-    const wasm_file = args[2];
-    vm.args = args[2..];
+    const zig_cache_dir_path = args[2];
+    vm.args = args[3..];
+    const wasm_file = vm.args[0];
 
     const cwd = try fs.cwd().openDir(".", .{});
-    const cache_dir = try cwd.makeOpenPath("zig1-cache", .{});
+    const cache_dir = try cwd.makeOpenPath(zig_cache_dir_path, .{});
     const zig_lib_dir = try cwd.openDirZ(zig_lib_dir_path, .{}, false);
 
     addPreopen(0, "stdin", os.STDIN_FILENO);
