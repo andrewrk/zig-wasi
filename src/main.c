@@ -208,6 +208,8 @@ enum Op {
     Op_global_get_32,
     Op_global_set_0_32,
     Op_global_set_32,
+    Op_const_32,
+    Op_const_64,
     Op_wasm,
     Op_wasm_prefixed,
 };
@@ -1458,9 +1460,8 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             {
                 uint32_t x = read32_ileb128(mod_ptr, code_i);
                 if (unreachable_depth == 0) {
-                    opcodes[pc->opcode + 0] = Op_wasm;
-                    opcodes[pc->opcode + 1] = opcode;
-                    pc->opcode += 2;
+                    opcodes[pc->opcode] = Op_const_32;
+                    pc->opcode += 1;
                     operands[pc->operand] = x;
                     pc->operand += 1;
                 }
@@ -1471,9 +1472,8 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             {
                 uint64_t x = read64_ileb128(mod_ptr, code_i);
                 if (unreachable_depth == 0) {
-                    opcodes[pc->opcode + 0] = Op_wasm;
-                    opcodes[pc->opcode + 1] = opcode;
-                    pc->opcode += 2;
+                    opcodes[pc->opcode] = Op_const_64;
+                    pc->opcode += 1;
                     operands[pc->operand + 0] = x & UINT32_MAX;
                     operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
                     pc->operand += 2;
@@ -1487,9 +1487,8 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                 memcpy(&x, mod_ptr + *code_i, 4);
                 *code_i += 4;
                 if (unreachable_depth == 0) {
-                    opcodes[pc->opcode + 0] = Op_wasm;
-                    opcodes[pc->opcode + 1] = opcode;
-                    pc->opcode += 2;
+                    opcodes[pc->opcode] = Op_const_32;
+                    pc->opcode += 1;
                     operands[pc->operand] = x;
                     pc->operand += 1;
                 }
@@ -1502,9 +1501,8 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                 memcpy(&x, mod_ptr + *code_i, 8);
                 *code_i += 8;
                 if (unreachable_depth == 0) {
-                    opcodes[pc->opcode + 0] = Op_wasm;
-                    opcodes[pc->opcode + 1] = opcode;
-                    pc->opcode += 2;
+                    opcodes[pc->opcode] = Op_const_64;
+                    pc->opcode += 1;
                     operands[pc->operand + 0] = x & UINT32_MAX;
                     operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
                     pc->operand += 2;

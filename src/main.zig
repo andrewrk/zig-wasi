@@ -431,6 +431,8 @@ const Opcode = enum {
     global_get_32,
     global_set_0_32,
     global_set_32,
+    const_32,
+    const_64,
     wasm,
     wasm_prefixed,
 };
@@ -1338,9 +1340,8 @@ const VirtualMachine = struct {
                 .i32_const => {
                     const x = @bitCast(u32, try leb.readILEB128(i32, reader));
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                        opcodes[pc.opcode + 1] = opcode;
-                        pc.opcode += 2;
+                        opcodes[pc.opcode] = @enumToInt(Opcode.const_32);
+                        pc.opcode += 1;
                         operands[pc.operand] = x;
                         pc.operand += 1;
                     }
@@ -1348,9 +1349,8 @@ const VirtualMachine = struct {
                 .i64_const => {
                     const x = @bitCast(u64, try leb.readILEB128(i64, reader));
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                        opcodes[pc.opcode + 1] = opcode;
-                        pc.opcode += 2;
+                        opcodes[pc.opcode] = @enumToInt(Opcode.const_64);
+                        pc.opcode += 1;
                         operands[pc.operand + 0] = @truncate(u32, x);
                         operands[pc.operand + 1] = @truncate(u32, x >> 32);
                         pc.operand += 2;
@@ -1359,9 +1359,8 @@ const VirtualMachine = struct {
                 .f32_const => {
                     const x = try reader.readIntLittle(u32);
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                        opcodes[pc.opcode + 1] = opcode;
-                        pc.opcode += 2;
+                        opcodes[pc.opcode] = @enumToInt(Opcode.const_32);
+                        pc.opcode += 1;
                         operands[pc.operand] = x;
                         pc.operand += 1;
                     }
@@ -1369,9 +1368,8 @@ const VirtualMachine = struct {
                 .f64_const => {
                     const x = try reader.readIntLittle(u64);
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                        opcodes[pc.opcode + 1] = opcode;
-                        pc.opcode += 2;
+                        opcodes[pc.opcode] = @enumToInt(Opcode.const_64);
+                        pc.opcode += 1;
                         operands[pc.operand + 0] = @truncate(u32, x);
                         operands[pc.operand + 1] = @truncate(u32, x >> 32);
                         pc.operand += 2;
@@ -1865,6 +1863,16 @@ const VirtualMachine = struct {
                     pc.operand += 1;
                     vm.globals[idx] = vm.pop(u32);
                 },
+                .const_32 => {
+                    const x = operands[pc.operand];
+                    pc.operand += 1;
+                    vm.push(i32, @bitCast(i32, x));
+                },
+                .const_64 => {
+                    const x = operands[pc.operand] | @as(u64, operands[pc.operand + 1]) << 32;
+                    pc.operand += 2;
+                    vm.push(i64, @bitCast(i64, x));
+                },
                 .wasm => {
                     const wasm_op = @intToEnum(wasm.Opcode, opcodes[pc.opcode]);
                     cpu_log.debug("op2={s}", .{@tagName(wasm_op)});
@@ -1889,6 +1897,10 @@ const VirtualMachine = struct {
                         .local_tee,
                         .global_get,
                         .global_set,
+                        .i32_const,
+                        .i64_const,
+                        .f32_const,
+                        .f64_const,
                         .prefixed,
                         => @panic("not produced by decodeCode"),
 
@@ -2042,26 +2054,6 @@ const VirtualMachine = struct {
                                 vm.memory_len = new_len;
                                 vm.push(u32, old_page_count);
                             }
-                        },
-                        .i32_const => {
-                            const x = operands[pc.operand];
-                            pc.operand += 1;
-                            vm.push(i32, @bitCast(i32, x));
-                        },
-                        .i64_const => {
-                            const x = operands[pc.operand] | @as(u64, operands[pc.operand + 1]) << 32;
-                            pc.operand += 2;
-                            vm.push(i64, @bitCast(i64, x));
-                        },
-                        .f32_const => {
-                            const x = operands[pc.operand];
-                            pc.operand += 1;
-                            vm.push(f32, @bitCast(f32, x));
-                        },
-                        .f64_const => {
-                            const x = operands[pc.operand] | @as(u64, operands[pc.operand + 1]) << 32;
-                            pc.operand += 2;
-                            vm.push(f64, @bitCast(f64, x));
                         },
                         .i32_eqz => {
                             const lhs = vm.pop(u32);
