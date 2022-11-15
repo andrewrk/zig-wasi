@@ -124,44 +124,67 @@ static void add_preopen(int wasi_fd, const char *name, int host_fd) {
 
 static const size_t max_memory = 2ul * 1024ul * 1024ul * 1024ul; // 2 GiB
 
-static int16_t read_i16_le(const char *ptr) {
-    // TODO handle big endian host
-    return *((int16_t *)ptr);
-}
-
 static uint16_t read_u16_le(const char *ptr) {
-    // TODO handle big endian host
-    return *((uint16_t *)ptr);
+    const uint8_t *u8_ptr = (const uint8_t *)ptr;
+    return
+        (((uint64_t)u8_ptr[0]) << 0x00) |
+        (((uint64_t)u8_ptr[1]) << 0x08);
 }
 
-static uint32_t read_i32_le(const char *ptr) {
-    // TODO handle big endian host
-    return *((int32_t *)ptr);
+static int16_t read_i16_le(const char *ptr) {
+    return read_u16_le(ptr);
 }
 
 static uint32_t read_u32_le(const char *ptr) {
-    // TODO handle big endian host
-    return *((uint32_t *)ptr);
+    const uint8_t *u8_ptr = (const uint8_t *)ptr;
+    return
+        (((uint64_t)u8_ptr[0]) << 0x00) |
+        (((uint64_t)u8_ptr[1]) << 0x08) |
+        (((uint64_t)u8_ptr[2]) << 0x10) |
+        (((uint64_t)u8_ptr[3]) << 0x18);
+}
+
+static uint32_t read_i32_le(const char *ptr) {
+    return read_u32_le(ptr);
 }
 
 static uint64_t read_u64_le(const char *ptr) {
-    // TODO handle big endian host
-    return *((uint64_t *)ptr);
+    const uint8_t *u8_ptr = (const uint8_t *)ptr;
+    return
+        (((uint64_t)u8_ptr[0]) << 0x00) |
+        (((uint64_t)u8_ptr[1]) << 0x08) |
+        (((uint64_t)u8_ptr[2]) << 0x10) |
+        (((uint64_t)u8_ptr[3]) << 0x18) |
+        (((uint64_t)u8_ptr[4]) << 0x20) |
+        (((uint64_t)u8_ptr[5]) << 0x28) |
+        (((uint64_t)u8_ptr[6]) << 0x30) |
+        (((uint64_t)u8_ptr[7]) << 0x38);
 }
 
-static void write_u16_le(const char *ptr, uint16_t value) {
-    // TODO handle big endian host
-    *((uint16_t *)ptr) = value;
+static void write_u16_le(char *ptr, uint16_t x) {
+    uint8_t *u8_ptr = (uint8_t*)ptr;
+    u8_ptr[0] = (x >> 0x00);
+    u8_ptr[1] = (x >> 0x08);
 }
 
-static void write_u32_le(const char *ptr, uint32_t value) {
-    // TODO handle big endian host
-    *((uint32_t *)ptr) = value;
+static void write_u32_le(char *ptr, uint32_t x) {
+    uint8_t *u8_ptr = (uint8_t*)ptr;
+    u8_ptr[0] = (x >> 0x00);
+    u8_ptr[1] = (x >> 0x08);
+    u8_ptr[2] = (x >> 0x10);
+    u8_ptr[3] = (x >> 0x18);
 }
 
-static void write_u64_le(const char *ptr, uint64_t value) {
-    // TODO handle big endian host
-    *((uint64_t *)ptr) = value;
+static void write_u64_le(char *ptr, uint64_t x) {
+    uint8_t *u8_ptr = (uint8_t*)ptr;
+    u8_ptr[0] = (x >> 0x00);
+    u8_ptr[1] = (x >> 0x08);
+    u8_ptr[2] = (x >> 0x10);
+    u8_ptr[3] = (x >> 0x18);
+    u8_ptr[4] = (x >> 0x20);
+    u8_ptr[5] = (x >> 0x28);
+    u8_ptr[6] = (x >> 0x30);
+    u8_ptr[7] = (x >> 0x38);
 }
 
 static uint32_t read32_uleb128(const char *ptr, uint32_t *i) {
