@@ -704,6 +704,19 @@ enum wasi_filetype_t {
     wasi_filetype_t_SYMBOLIC_LINK,
 };
 
+static const uint16_t WASI_O_CREAT = 0x0001;
+static const uint16_t WASI_O_DIRECTORY = 0x0002;
+static const uint16_t WASI_O_EXCL = 0x0004;
+static const uint16_t WASI_O_TRUNC = 0x0008;
+
+static const uint16_t WASI_FDFLAG_APPEND = 0x0001;
+static const uint16_t WASI_FDFLAG_DSYNC = 0x0002;
+static const uint16_t WASI_FDFLAG_NONBLOCK = 0x0004;
+static const uint16_t WASI_FDFLAG_SYNC = 0x0010;
+
+static const uint64_t WASI_RIGHT_FD_READ = 0x0000000000000002ull;
+static const uint64_t WASI_RIGHT_FD_WRITE = 0x0000000000000040ull;
+
 static enum wasi_filetype_t to_wasi_filetype(mode_t st_mode) {
     switch (st_mode & S_IFMT) {
         case S_IFBLK:
@@ -927,29 +940,34 @@ static enum wasi_errno_t wasi_path_open(
     uint16_t fs_flags, // wasi.fdflags_t,
     uint32_t fd
 ) {
-    panic("TODO implement wasi_path_open");
-    //const sub_path = vm->memory[path..][0..path_len];
-    //int host_fd = to_host_fd(dirfd);
-    //var flags: u32 = @as(u32, if (oflags & wasi.O.CREAT != 0) os.O.CREAT else 0) |
-    //    @as(u32, if (oflags & wasi.O.DIRECTORY != 0) os.O.DIRECTORY else 0) |
-    //    @as(u32, if (oflags & wasi.O.EXCL != 0) os.O.EXCL else 0) |
-    //    @as(u32, if (oflags & wasi.O.TRUNC != 0) os.O.TRUNC else 0) |
-    //    @as(u32, if (fs_flags & wasi.FDFLAG.APPEND != 0) os.O.APPEND else 0) |
-    //    @as(u32, if (fs_flags & wasi.FDFLAG.DSYNC != 0) os.O.DSYNC else 0) |
-    //    @as(u32, if (fs_flags & wasi.FDFLAG.NONBLOCK != 0) os.O.NONBLOCK else 0) |
-    //    @as(u32, if (fs_flags & wasi.FDFLAG.SYNC != 0) os.O.SYNC else 0);
-    //if ((fs_rights_base & wasi.RIGHT.FD_READ != 0) and
-    //    (fs_rights_base & wasi.RIGHT.FD_WRITE != 0))
-    //{
-    //    flags |= os.O.RDWR;
-    //} else if (fs_rights_base & wasi.RIGHT.FD_WRITE != 0) {
-    //    flags |= os.O.WRONLY;
-    //} else if (fs_rights_base & wasi.RIGHT.FD_READ != 0) {
-    //    flags |= os.O.RDONLY; // no-op because O_RDONLY is 0
-    //}
-    //const mode = 0o644;
-    //const res_fd = os.openat(host_fd, sub_path, flags, mode) catch |err| return toWasiError(err);
-    //mem.writeIntLittle(i32, vm->memory[fd..][0..4], res_fd);
+    char sub_path[PATH_MAX];
+    memcpy(sub_path, vm->memory + path, path_len);
+    sub_path[path_len] = 0;
+
+    int host_fd = to_host_fd(dirfd);
+    uint32_t flags =
+        (((oflags & WASI_O_CREAT) != 0) ? O_CREAT : 0) |
+        (((oflags & WASI_O_DIRECTORY) != 0) ? O_DIRECTORY : 0) |
+        (((oflags & WASI_O_EXCL) != 0) ? O_EXCL : 0) |
+        (((oflags & WASI_O_TRUNC) != 0) ? O_TRUNC : 0) |
+        (((fs_flags & WASI_FDFLAG_APPEND) != 0) ? O_APPEND : 0) |
+        (((fs_flags & WASI_FDFLAG_DSYNC) != 0) ? O_DSYNC : 0) |
+        (((fs_flags & WASI_FDFLAG_NONBLOCK) != 0) ? O_NONBLOCK : 0) |
+        (((fs_flags & WASI_FDFLAG_SYNC) != 0) ? O_SYNC : 0);
+
+    if (((fs_rights_base & WASI_RIGHT_FD_READ) != 0) &&
+        ((fs_rights_base & WASI_RIGHT_FD_WRITE) != 0))
+    {
+        flags |= O_RDWR;
+    } else if ((fs_rights_base & WASI_RIGHT_FD_WRITE) != 0) {
+        flags |= O_WRONLY;
+    } else if ((fs_rights_base & WASI_RIGHT_FD_READ) != 0) {
+        flags |= O_RDONLY; // no-op because O_RDONLY is 0
+    }
+    mode_t mode = 0644;
+    int res_fd = openat(host_fd, sub_path, flags, mode);
+    if (res_fd == -1) return to_wasi_err(errno);
+    write_u32_le(vm->memory + fd, res_fd);
     return WASI_ESUCCESS;
 }
 
@@ -961,24 +979,26 @@ static enum wasi_errno_t wasi_path_filestat_get(
     uint32_t path_len, // usize
     uint32_t buf // *filestat_t
 ) {
-    char path_buf[PATH_MAX];
-    memcpy(path_buf, vm->memory + path, path_len);
-    path_buf[path_len] = 0;
+    char sub_path[PATH_MAX];
+    memcpy(sub_path, vm->memory + path, path_len);
+    sub_path[path_len] = 0;
 
     int host_fd = to_host_fd(fd);
     struct stat st;
-    if (fstatat(host_fd, path_buf, &st, 0) == -1) return to_wasi_err(errno);
+    if (fstatat(host_fd, sub_path, &st, 0) == -1) return to_wasi_err(errno);
     return finish_wasi_stat(vm, buf, st);
 }
 
 /// extern fn path_create_directory(fd: fd_t, path: [*]const u8, path_len: usize) errno_t;
-static enum wasi_errno_t wasi_path_create_directory(struct VirtualMachine *vm, int32_t fd, uint32_t path, uint32_t path_len) {
-    panic("TODO implement wasi_path_create_directory");
-    //const sub_path = vm->memory[path..][0..path_len];
-    //trace_log.debug("wasi_path_create_directory fd={d} path={s}", .{ fd, sub_path });
-    //int host_fd = to_host_fd(fd);
-    //const dir: fs.Dir = .{ .fd = host_fd };
-    //dir.makeDir(sub_path) catch |err| return toWasiError(err);
+static enum wasi_errno_t wasi_path_create_directory(struct VirtualMachine *vm,
+        int32_t wasi_fd, uint32_t path, uint32_t path_len)
+{
+    char sub_path[PATH_MAX];
+    memcpy(sub_path, vm->memory + path, path_len);
+    sub_path[path_len] = 0;
+
+    int host_fd = to_host_fd(wasi_fd);
+    if (mkdirat(host_fd, sub_path, 0777) == -1) return to_wasi_err(errno);
     return WASI_ESUCCESS;
 }
 
@@ -1033,10 +1053,10 @@ static enum wasi_errno_t wasi_fd_fdstat_get(struct VirtualMachine *vm, int32_t f
     //int host_fd = to_host_fd(fd);
     //const file = fs.File{ .handle = host_fd };
     //const stat = file.stat() catch |err| return toWasiError(err);
-    //mem.writeIntLittle(u16, vm->memory[buf + 0x00 ..][0..2], @enumToInt(to_wasi_filetype(stat.kind)));
-    //mem.writeIntLittle(u16, vm->memory[buf + 0x02 ..][0..2], 0); // flags
-    //mem.writeIntLittle(u64, vm->memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
-    //mem.writeIntLittle(u64, vm->memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
+    //write_u16_le(vm->memory[buf + 0x00 ..][0..2], @enumToInt(to_wasi_filetype(stat.kind)));
+    //write_u16_le(vm->memory[buf + 0x02 ..][0..2], 0); // flags
+    //write_u64_le(vm->memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
+    //write_u64_le(vm->memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
     return WASI_ESUCCESS;
 }
 
@@ -1049,7 +1069,7 @@ static enum wasi_errno_t wasi_clock_time_get(struct VirtualMachine *vm,
     //_ = precision;
     //_ = clock_id;
     //const wasi_ts = to_wasi_timestamp(std.time.nanoTimestamp());
-    //mem.writeIntLittle(u64, vm->memory[timestamp..][0..8], wasi_ts);
+    //write_u64_le(vm->memory[timestamp..][0..8], wasi_ts);
     return WASI_ESUCCESS;
 }
 
