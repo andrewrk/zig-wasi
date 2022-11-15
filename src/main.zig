@@ -57,7 +57,7 @@ fn main2(args: []const [*:0]const u8) !void {
     );
 
     const zig_lib_dir_path = args[1];
-    const zig_cache_dir_path = args[2];
+    const zig_cache_dir_path = mem.sliceTo(args[2], 0);
     vm.args = args[3..];
     const wasm_file = vm.args[0];
 
