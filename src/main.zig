@@ -1083,8 +1083,8 @@ const VirtualMachine = struct {
                     stack_depth = label.stack_depth + label.type_info.param_count;
                 },
                 .end => {
-                    unreachable_depth -|= 1;
-                    if (unreachable_depth == 0) {
+                    if (unreachable_depth <= 1) {
+                        unreachable_depth = 0;
                         const label = &labels[label_i];
                         const target_pc = if (label.opcode == .loop) &label.extra.loop_pc else pc;
                         if (label.opcode == .@"if") {
@@ -1095,7 +1095,7 @@ const VirtualMachine = struct {
                         var ref = label.ref_list;
                         while (ref != math.maxInt(u32)) {
                             const next_ref = operands[ref];
-                            operands[ref] = target_pc.opcode;
+                            operands[ref + 0] = target_pc.opcode;
                             operands[ref + 1] = target_pc.operand;
                             ref = next_ref;
                         }
@@ -1120,7 +1120,7 @@ const VirtualMachine = struct {
                             return;
                         }
                         label_i -= 1;
-                    }
+                    } else unreachable_depth -= 1;
                 },
                 .br,
                 .br_if,
@@ -1149,7 +1149,7 @@ const VirtualMachine = struct {
                             else => unreachable,
                         });
                         pc.opcode += 1;
-                        operands[pc.operand] = stack_depth - operand_count - label.stack_depth;
+                        operands[pc.operand + 0] = stack_depth - operand_count - label.stack_depth;
                         operands[pc.operand + 1] = label.ref_list;
                         label.ref_list = pc.operand + 1;
                         pc.operand += 3;
@@ -1176,7 +1176,7 @@ const VirtualMachine = struct {
                             operands[pc.operand] = labels_len;
                             pc.operand += 1;
                         }
-                        operands[pc.operand] = stack_depth - operand_count - label.stack_depth;
+                        operands[pc.operand + 0] = stack_depth - operand_count - label.stack_depth;
                         operands[pc.operand + 1] = label.ref_list;
                         label.ref_list = pc.operand + 1;
                         pc.operand += 3;
@@ -1196,11 +1196,11 @@ const VirtualMachine = struct {
                                 vm.functions[fn_id - @intCast(u32, vm.imports.len)].type_idx
                         ];
                         stack_depth -= type_info.param_count;
-                        var result_index: u32 = 0;
-                        while (result_index < type_info.result_count) : (result_index += 1)
+                        var result_i: u32 = 0;
+                        while (result_i < type_info.result_count) : (result_i += 1)
                             stack_types.setValue(
-                                stack_depth + result_index,
-                                type_info.result_types.isSet(result_index),
+                                stack_depth + result_i,
+                                type_info.result_types.isSet(result_i),
                             );
                         stack_depth += type_info.result_count;
                     }
@@ -1214,11 +1214,11 @@ const VirtualMachine = struct {
                         pc.opcode += 2;
                         const type_info = &vm.types[type_idx];
                         stack_depth -= type_info.param_count;
-                        var result_index: u32 = 0;
-                        while (result_index < type_info.result_count) : (result_index += 1)
+                        var result_i: u32 = 0;
+                        while (result_i < type_info.result_count) : (result_i += 1)
                             stack_types.setValue(
-                                stack_depth + result_index,
-                                type_info.result_types.isSet(result_index),
+                                stack_depth + result_i,
+                                type_info.result_types.isSet(result_i),
                             );
                         stack_depth += type_info.result_count;
                     }
@@ -1234,7 +1234,7 @@ const VirtualMachine = struct {
                         else => unreachable,
                     });
                     pc.opcode += 1;
-                    operands[pc.operand] = 2 + stack_depth - labels[0].stack_depth;
+                    operands[pc.operand + 0] = 2 + stack_depth - labels[0].stack_depth;
                     stack_depth -= operand_count;
                     operands[pc.operand + 1] = stack_depth;
                     pc.operand += 2;
@@ -1270,7 +1270,6 @@ const VirtualMachine = struct {
                 .global_set,
                 => |opc| {
                     const global_idx = try leb.readULEB128(u32, reader);
-                    assert(global_idx == 0);
                     if (unreachable_depth == 0) {
                         opcodes[pc.opcode] = @enumToInt(switch (global_idx) {
                             0 => switch (opc) {
@@ -1352,7 +1351,7 @@ const VirtualMachine = struct {
                         opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
                         opcodes[pc.opcode + 1] = opcode;
                         pc.opcode += 2;
-                        operands[pc.operand] = @truncate(u32, x);
+                        operands[pc.operand + 0] = @truncate(u32, x);
                         operands[pc.operand + 1] = @truncate(u32, x >> 32);
                         pc.operand += 2;
                     }
@@ -1373,7 +1372,7 @@ const VirtualMachine = struct {
                         opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
                         opcodes[pc.opcode + 1] = opcode;
                         pc.opcode += 2;
-                        operands[pc.operand] = @truncate(u32, x);
+                        operands[pc.operand + 0] = @truncate(u32, x);
                         operands[pc.operand + 1] = @truncate(u32, x >> 32);
                         pc.operand += 2;
                     }

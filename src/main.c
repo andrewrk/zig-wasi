@@ -23,12 +23,31 @@ static void *arena_alloc(size_t n) {
     return ptr;
 }
 
+static void *arena_realloc(void *ptr, size_t new_n) {
+    void *new_ptr = realloc(ptr, new_n);
+    if (!new_ptr) panic("out of memory");
+    return new_ptr;
+}
+
 static int err_wrap(const char *prefix, int rc) {
     if (rc == -1) {
         perror(prefix);
         abort();
     }
     return rc;
+}
+
+static bool bs_isSet(const uint32_t *bitset, uint32_t index) {
+    return (bitset[index >> 5] >> (index & 0x1f)) & 1;
+}
+static void bs_set(uint32_t *bitset, uint32_t index) {
+    bitset[index >> 5] |=  ((uint32_t)1 << (index & 0x1f));
+}
+static void bs_unset(uint32_t *bitset, uint32_t index) {
+    bitset[index >> 5] &= ~((uint32_t)1 << (index & 0x1f));
+}
+static void bs_setValue(uint32_t *bitset, uint32_t index, bool value) {
+    if (value) bs_set(bitset, index); else bs_unset(bitset, index);
 }
 
 struct ByteSlice {
@@ -158,206 +177,242 @@ enum Section {
 };
 
 enum Op {
-    Op_unreachable = 0x00,
-    Op_nop = 0x01,
-    Op_block = 0x02,
-    Op_loop = 0x03,
-    Op_if = 0x04,
-    Op_else = 0x05,
-    Op_end = 0x0B,
-    Op_br = 0x0C,
-    Op_br_if = 0x0D,
-    Op_br_table = 0x0E,
-    Op_return = 0x0F,
-    Op_call = 0x10,
-    Op_call_indirect = 0x11,
-    Op_drop = 0x1A,
-    Op_select = 0x1B,
-    Op_local_get = 0x20,
-    Op_local_set = 0x21,
-    Op_local_tee = 0x22,
-    Op_global_get = 0x23,
-    Op_global_set = 0x24,
-    Op_i32_load = 0x28,
-    Op_i64_load = 0x29,
-    Op_f32_load = 0x2A,
-    Op_f64_load = 0x2B,
-    Op_i32_load8_s = 0x2C,
-    Op_i32_load8_u = 0x2D,
-    Op_i32_load16_s = 0x2E,
-    Op_i32_load16_u = 0x2F,
-    Op_i64_load8_s = 0x30,
-    Op_i64_load8_u = 0x31,
-    Op_i64_load16_s = 0x32,
-    Op_i64_load16_u = 0x33,
-    Op_i64_load32_s = 0x34,
-    Op_i64_load32_u = 0x35,
-    Op_i32_store = 0x36,
-    Op_i64_store = 0x37,
-    Op_f32_store = 0x38,
-    Op_f64_store = 0x39,
-    Op_i32_store8 = 0x3A,
-    Op_i32_store16 = 0x3B,
-    Op_i64_store8 = 0x3C,
-    Op_i64_store16 = 0x3D,
-    Op_i64_store32 = 0x3E,
-    Op_memory_size = 0x3F,
-    Op_memory_grow = 0x40,
-    Op_i32_const = 0x41,
-    Op_i64_const = 0x42,
-    Op_f32_const = 0x43,
-    Op_f64_const = 0x44,
-    Op_i32_eqz = 0x45,
-    Op_i32_eq = 0x46,
-    Op_i32_ne = 0x47,
-    Op_i32_lt_s = 0x48,
-    Op_i32_lt_u = 0x49,
-    Op_i32_gt_s = 0x4A,
-    Op_i32_gt_u = 0x4B,
-    Op_i32_le_s = 0x4C,
-    Op_i32_le_u = 0x4D,
-    Op_i32_ge_s = 0x4E,
-    Op_i32_ge_u = 0x4F,
-    Op_i64_eqz = 0x50,
-    Op_i64_eq = 0x51,
-    Op_i64_ne = 0x52,
-    Op_i64_lt_s = 0x53,
-    Op_i64_lt_u = 0x54,
-    Op_i64_gt_s = 0x55,
-    Op_i64_gt_u = 0x56,
-    Op_i64_le_s = 0x57,
-    Op_i64_le_u = 0x58,
-    Op_i64_ge_s = 0x59,
-    Op_i64_ge_u = 0x5A,
-    Op_f32_eq = 0x5B,
-    Op_f32_ne = 0x5C,
-    Op_f32_lt = 0x5D,
-    Op_f32_gt = 0x5E,
-    Op_f32_le = 0x5F,
-    Op_f32_ge = 0x60,
-    Op_f64_eq = 0x61,
-    Op_f64_ne = 0x62,
-    Op_f64_lt = 0x63,
-    Op_f64_gt = 0x64,
-    Op_f64_le = 0x65,
-    Op_f64_ge = 0x66,
-    Op_i32_clz = 0x67,
-    Op_i32_ctz = 0x68,
-    Op_i32_popcnt = 0x69,
-    Op_i32_add = 0x6A,
-    Op_i32_sub = 0x6B,
-    Op_i32_mul = 0x6C,
-    Op_i32_div_s = 0x6D,
-    Op_i32_div_u = 0x6E,
-    Op_i32_rem_s = 0x6F,
-    Op_i32_rem_u = 0x70,
-    Op_i32_and = 0x71,
-    Op_i32_or = 0x72,
-    Op_i32_xor = 0x73,
-    Op_i32_shl = 0x74,
-    Op_i32_shr_s = 0x75,
-    Op_i32_shr_u = 0x76,
-    Op_i32_rotl = 0x77,
-    Op_i32_rotr = 0x78,
-    Op_i64_clz = 0x79,
-    Op_i64_ctz = 0x7A,
-    Op_i64_popcnt = 0x7B,
-    Op_i64_add = 0x7C,
-    Op_i64_sub = 0x7D,
-    Op_i64_mul = 0x7E,
-    Op_i64_div_s = 0x7F,
-    Op_i64_div_u = 0x80,
-    Op_i64_rem_s = 0x81,
-    Op_i64_rem_u = 0x82,
-    Op_i64_and = 0x83,
-    Op_i64_or = 0x84,
-    Op_i64_xor = 0x85,
-    Op_i64_shl = 0x86,
-    Op_i64_shr_s = 0x87,
-    Op_i64_shr_u = 0x88,
-    Op_i64_rotl = 0x89,
-    Op_i64_rotr = 0x8A,
-    Op_f32_abs = 0x8B,
-    Op_f32_neg = 0x8C,
-    Op_f32_ceil = 0x8D,
-    Op_f32_floor = 0x8E,
-    Op_f32_trunc = 0x8F,
-    Op_f32_nearest = 0x90,
-    Op_f32_sqrt = 0x91,
-    Op_f32_add = 0x92,
-    Op_f32_sub = 0x93,
-    Op_f32_mul = 0x94,
-    Op_f32_div = 0x95,
-    Op_f32_min = 0x96,
-    Op_f32_max = 0x97,
-    Op_f32_copysign = 0x98,
-    Op_f64_abs = 0x99,
-    Op_f64_neg = 0x9A,
-    Op_f64_ceil = 0x9B,
-    Op_f64_floor = 0x9C,
-    Op_f64_trunc = 0x9D,
-    Op_f64_nearest = 0x9E,
-    Op_f64_sqrt = 0x9F,
-    Op_f64_add = 0xA0,
-    Op_f64_sub = 0xA1,
-    Op_f64_mul = 0xA2,
-    Op_f64_div = 0xA3,
-    Op_f64_min = 0xA4,
-    Op_f64_max = 0xA5,
-    Op_f64_copysign = 0xA6,
-    Op_i32_wrap_i64 = 0xA7,
-    Op_i32_trunc_f32_s = 0xA8,
-    Op_i32_trunc_f32_u = 0xA9,
-    Op_i32_trunc_f64_s = 0xAA,
-    Op_i32_trunc_f64_u = 0xAB,
-    Op_i64_extend_i32_s = 0xAC,
-    Op_i64_extend_i32_u = 0xAD,
-    Op_i64_trunc_f32_s = 0xAE,
-    Op_i64_trunc_f32_u = 0xAF,
-    Op_i64_trunc_f64_s = 0xB0,
-    Op_i64_trunc_f64_u = 0xB1,
-    Op_f32_convert_i32_s = 0xB2,
-    Op_f32_convert_i32_u = 0xB3,
-    Op_f32_convert_i64_s = 0xB4,
-    Op_f32_convert_i64_u = 0xB5,
-    Op_f32_demote_f64 = 0xB6,
-    Op_f64_convert_i32_s = 0xB7,
-    Op_f64_convert_i32_u = 0xB8,
-    Op_f64_convert_i64_s = 0xB9,
-    Op_f64_convert_i64_u = 0xBA,
-    Op_f64_promote_f32 = 0xBB,
-    Op_i32_reinterpret_f32 = 0xBC,
-    Op_i64_reinterpret_f64 = 0xBD,
-    Op_f32_reinterpret_i32 = 0xBE,
-    Op_f64_reinterpret_i64 = 0xBF,
-    Op_i32_extend8_s = 0xC0,
-    Op_i32_extend16_s = 0xC1,
-    Op_i64_extend8_s = 0xC2,
-    Op_i64_extend16_s = 0xC3,
-    Op_i64_extend32_s = 0xC4,
-
-    Op_prefixed = 0xFC,
+    Op_unreachable,
+    Op_br_void,
+    Op_br_32,
+    Op_br_64,
+    Op_br_if_nez_void,
+    Op_br_if_nez_32,
+    Op_br_if_nez_64,
+    Op_br_if_eqz_void,
+    Op_br_if_eqz_32,
+    Op_br_if_eqz_64,
+    Op_br_table_void,
+    Op_br_table_32,
+    Op_br_table_64,
+    Op_return_void,
+    Op_return_32,
+    Op_return_64,
+    Op_call,
+    Op_drop_32,
+    Op_drop_64,
+    Op_select_32,
+    Op_select_64,
+    Op_local_get_32,
+    Op_local_get_64,
+    Op_local_set_32,
+    Op_local_set_64,
+    Op_local_tee_32,
+    Op_local_tee_64,
+    Op_global_get_0_32,
+    Op_global_get_32,
+    Op_global_set_0_32,
+    Op_global_set_32,
+    Op_wasm,
+    Op_wasm_prefixed,
 };
 
-enum PrefixedOp {
-    PrefixedOp_i32_trunc_sat_f32_s = 0x00,
-    PrefixedOp_i32_trunc_sat_f32_u = 0x01,
-    PrefixedOp_i32_trunc_sat_f64_s = 0x02,
-    PrefixedOp_i32_trunc_sat_f64_u = 0x03,
-    PrefixedOp_i64_trunc_sat_f32_s = 0x04,
-    PrefixedOp_i64_trunc_sat_f32_u = 0x05,
-    PrefixedOp_i64_trunc_sat_f64_s = 0x06,
-    PrefixedOp_i64_trunc_sat_f64_u = 0x07,
-    PrefixedOp_memory_init = 0x08,
-    PrefixedOp_data_drop = 0x09,
-    PrefixedOp_memory_copy = 0x0A,
-    PrefixedOp_memory_fill = 0x0B,
-    PrefixedOp_table_init = 0x0C,
-    PrefixedOp_elem_drop = 0x0D,
-    PrefixedOp_table_copy = 0x0E,
-    PrefixedOp_table_grow = 0x0F,
-    PrefixedOp_table_size = 0x10,
-    PrefixedOp_table_fill = 0x11,
+enum WasmOp {
+    WasmOp_unreachable = 0x00,
+    WasmOp_nop = 0x01,
+    WasmOp_block = 0x02,
+    WasmOp_loop = 0x03,
+    WasmOp_if = 0x04,
+    WasmOp_else = 0x05,
+    WasmOp_end = 0x0B,
+    WasmOp_br = 0x0C,
+    WasmOp_br_if = 0x0D,
+    WasmOp_br_table = 0x0E,
+    WasmOp_return = 0x0F,
+    WasmOp_call = 0x10,
+    WasmOp_call_indirect = 0x11,
+    WasmOp_drop = 0x1A,
+    WasmOp_select = 0x1B,
+    WasmOp_local_get = 0x20,
+    WasmOp_local_set = 0x21,
+    WasmOp_local_tee = 0x22,
+    WasmOp_global_get = 0x23,
+    WasmOp_global_set = 0x24,
+    WasmOp_i32_load = 0x28,
+    WasmOp_i64_load = 0x29,
+    WasmOp_f32_load = 0x2A,
+    WasmOp_f64_load = 0x2B,
+    WasmOp_i32_load8_s = 0x2C,
+    WasmOp_i32_load8_u = 0x2D,
+    WasmOp_i32_load16_s = 0x2E,
+    WasmOp_i32_load16_u = 0x2F,
+    WasmOp_i64_load8_s = 0x30,
+    WasmOp_i64_load8_u = 0x31,
+    WasmOp_i64_load16_s = 0x32,
+    WasmOp_i64_load16_u = 0x33,
+    WasmOp_i64_load32_s = 0x34,
+    WasmOp_i64_load32_u = 0x35,
+    WasmOp_i32_store = 0x36,
+    WasmOp_i64_store = 0x37,
+    WasmOp_f32_store = 0x38,
+    WasmOp_f64_store = 0x39,
+    WasmOp_i32_store8 = 0x3A,
+    WasmOp_i32_store16 = 0x3B,
+    WasmOp_i64_store8 = 0x3C,
+    WasmOp_i64_store16 = 0x3D,
+    WasmOp_i64_store32 = 0x3E,
+    WasmOp_memory_size = 0x3F,
+    WasmOp_memory_grow = 0x40,
+    WasmOp_i32_const = 0x41,
+    WasmOp_i64_const = 0x42,
+    WasmOp_f32_const = 0x43,
+    WasmOp_f64_const = 0x44,
+    WasmOp_i32_eqz = 0x45,
+    WasmOp_i32_eq = 0x46,
+    WasmOp_i32_ne = 0x47,
+    WasmOp_i32_lt_s = 0x48,
+    WasmOp_i32_lt_u = 0x49,
+    WasmOp_i32_gt_s = 0x4A,
+    WasmOp_i32_gt_u = 0x4B,
+    WasmOp_i32_le_s = 0x4C,
+    WasmOp_i32_le_u = 0x4D,
+    WasmOp_i32_ge_s = 0x4E,
+    WasmOp_i32_ge_u = 0x4F,
+    WasmOp_i64_eqz = 0x50,
+    WasmOp_i64_eq = 0x51,
+    WasmOp_i64_ne = 0x52,
+    WasmOp_i64_lt_s = 0x53,
+    WasmOp_i64_lt_u = 0x54,
+    WasmOp_i64_gt_s = 0x55,
+    WasmOp_i64_gt_u = 0x56,
+    WasmOp_i64_le_s = 0x57,
+    WasmOp_i64_le_u = 0x58,
+    WasmOp_i64_ge_s = 0x59,
+    WasmOp_i64_ge_u = 0x5A,
+    WasmOp_f32_eq = 0x5B,
+    WasmOp_f32_ne = 0x5C,
+    WasmOp_f32_lt = 0x5D,
+    WasmOp_f32_gt = 0x5E,
+    WasmOp_f32_le = 0x5F,
+    WasmOp_f32_ge = 0x60,
+    WasmOp_f64_eq = 0x61,
+    WasmOp_f64_ne = 0x62,
+    WasmOp_f64_lt = 0x63,
+    WasmOp_f64_gt = 0x64,
+    WasmOp_f64_le = 0x65,
+    WasmOp_f64_ge = 0x66,
+    WasmOp_i32_clz = 0x67,
+    WasmOp_i32_ctz = 0x68,
+    WasmOp_i32_popcnt = 0x69,
+    WasmOp_i32_add = 0x6A,
+    WasmOp_i32_sub = 0x6B,
+    WasmOp_i32_mul = 0x6C,
+    WasmOp_i32_div_s = 0x6D,
+    WasmOp_i32_div_u = 0x6E,
+    WasmOp_i32_rem_s = 0x6F,
+    WasmOp_i32_rem_u = 0x70,
+    WasmOp_i32_and = 0x71,
+    WasmOp_i32_or = 0x72,
+    WasmOp_i32_xor = 0x73,
+    WasmOp_i32_shl = 0x74,
+    WasmOp_i32_shr_s = 0x75,
+    WasmOp_i32_shr_u = 0x76,
+    WasmOp_i32_rotl = 0x77,
+    WasmOp_i32_rotr = 0x78,
+    WasmOp_i64_clz = 0x79,
+    WasmOp_i64_ctz = 0x7A,
+    WasmOp_i64_popcnt = 0x7B,
+    WasmOp_i64_add = 0x7C,
+    WasmOp_i64_sub = 0x7D,
+    WasmOp_i64_mul = 0x7E,
+    WasmOp_i64_div_s = 0x7F,
+    WasmOp_i64_div_u = 0x80,
+    WasmOp_i64_rem_s = 0x81,
+    WasmOp_i64_rem_u = 0x82,
+    WasmOp_i64_and = 0x83,
+    WasmOp_i64_or = 0x84,
+    WasmOp_i64_xor = 0x85,
+    WasmOp_i64_shl = 0x86,
+    WasmOp_i64_shr_s = 0x87,
+    WasmOp_i64_shr_u = 0x88,
+    WasmOp_i64_rotl = 0x89,
+    WasmOp_i64_rotr = 0x8A,
+    WasmOp_f32_abs = 0x8B,
+    WasmOp_f32_neg = 0x8C,
+    WasmOp_f32_ceil = 0x8D,
+    WasmOp_f32_floor = 0x8E,
+    WasmOp_f32_trunc = 0x8F,
+    WasmOp_f32_nearest = 0x90,
+    WasmOp_f32_sqrt = 0x91,
+    WasmOp_f32_add = 0x92,
+    WasmOp_f32_sub = 0x93,
+    WasmOp_f32_mul = 0x94,
+    WasmOp_f32_div = 0x95,
+    WasmOp_f32_min = 0x96,
+    WasmOp_f32_max = 0x97,
+    WasmOp_f32_copysign = 0x98,
+    WasmOp_f64_abs = 0x99,
+    WasmOp_f64_neg = 0x9A,
+    WasmOp_f64_ceil = 0x9B,
+    WasmOp_f64_floor = 0x9C,
+    WasmOp_f64_trunc = 0x9D,
+    WasmOp_f64_nearest = 0x9E,
+    WasmOp_f64_sqrt = 0x9F,
+    WasmOp_f64_add = 0xA0,
+    WasmOp_f64_sub = 0xA1,
+    WasmOp_f64_mul = 0xA2,
+    WasmOp_f64_div = 0xA3,
+    WasmOp_f64_min = 0xA4,
+    WasmOp_f64_max = 0xA5,
+    WasmOp_f64_copysign = 0xA6,
+    WasmOp_i32_wrap_i64 = 0xA7,
+    WasmOp_i32_trunc_f32_s = 0xA8,
+    WasmOp_i32_trunc_f32_u = 0xA9,
+    WasmOp_i32_trunc_f64_s = 0xAA,
+    WasmOp_i32_trunc_f64_u = 0xAB,
+    WasmOp_i64_extend_i32_s = 0xAC,
+    WasmOp_i64_extend_i32_u = 0xAD,
+    WasmOp_i64_trunc_f32_s = 0xAE,
+    WasmOp_i64_trunc_f32_u = 0xAF,
+    WasmOp_i64_trunc_f64_s = 0xB0,
+    WasmOp_i64_trunc_f64_u = 0xB1,
+    WasmOp_f32_convert_i32_s = 0xB2,
+    WasmOp_f32_convert_i32_u = 0xB3,
+    WasmOp_f32_convert_i64_s = 0xB4,
+    WasmOp_f32_convert_i64_u = 0xB5,
+    WasmOp_f32_demote_f64 = 0xB6,
+    WasmOp_f64_convert_i32_s = 0xB7,
+    WasmOp_f64_convert_i32_u = 0xB8,
+    WasmOp_f64_convert_i64_s = 0xB9,
+    WasmOp_f64_convert_i64_u = 0xBA,
+    WasmOp_f64_promote_f32 = 0xBB,
+    WasmOp_i32_reinterpret_f32 = 0xBC,
+    WasmOp_i64_reinterpret_f64 = 0xBD,
+    WasmOp_f32_reinterpret_i32 = 0xBE,
+    WasmOp_f64_reinterpret_i64 = 0xBF,
+    WasmOp_i32_extend8_s = 0xC0,
+    WasmOp_i32_extend16_s = 0xC1,
+    WasmOp_i64_extend8_s = 0xC2,
+    WasmOp_i64_extend16_s = 0xC3,
+    WasmOp_i64_extend32_s = 0xC4,
+
+    WasmOp_prefixed = 0xFC,
+};
+
+enum WasmPrefixedOp {
+    WasmPrefixedOp_i32_trunc_sat_f32_s = 0x00,
+    WasmPrefixedOp_i32_trunc_sat_f32_u = 0x01,
+    WasmPrefixedOp_i32_trunc_sat_f64_s = 0x02,
+    WasmPrefixedOp_i32_trunc_sat_f64_u = 0x03,
+    WasmPrefixedOp_i64_trunc_sat_f32_s = 0x04,
+    WasmPrefixedOp_i64_trunc_sat_f32_u = 0x05,
+    WasmPrefixedOp_i64_trunc_sat_f64_s = 0x06,
+    WasmPrefixedOp_i64_trunc_sat_f64_u = 0x07,
+    WasmPrefixedOp_memory_init = 0x08,
+    WasmPrefixedOp_data_drop = 0x09,
+    WasmPrefixedOp_memory_copy = 0x0A,
+    WasmPrefixedOp_memory_fill = 0x0B,
+    WasmPrefixedOp_table_init = 0x0C,
+    WasmPrefixedOp_elem_drop = 0x0D,
+    WasmPrefixedOp_table_copy = 0x0E,
+    WasmPrefixedOp_table_grow = 0x0F,
+    WasmPrefixedOp_table_size = 0x10,
+    WasmPrefixedOp_table_fill = 0x11,
 };
 
 static const uint32_t wasm_page_size = 64 * 1024;
@@ -369,20 +424,61 @@ struct ProgramCounter {
 
 struct TypeInfo {
     uint32_t param_count;
+    // bitset with param_count bits, indexed from lsb, 0 -> 32-bit, 1 -> 64-bit
+    uint32_t param_types;
     uint32_t result_count;
+    // bitset with result_count bits, indexed from lsb, 0 -> 32-bit, 1 -> 64-bit
+    uint32_t result_types;
 };
 
 struct Function {
     // Index to start of code in opcodes/operands.
-    struct ProgramCounter pc;
+    struct ProgramCounter entry_pc;
+    uint32_t type_idx;
     uint32_t locals_count;
-    struct TypeInfo type_info;
+    // multi-word bitset with vm->types[type_idx].param_count + locals_count bits
+    // indexed from lsb of the first element, 0 -> 32-bit, 1 -> 64-bit
+    uint32_t *local_types;
+};
+
+enum ImpMod {
+    ImpMod_wasi_snapshot_preview1,
+};
+
+enum ImpName {
+    ImpName_args_get,
+    ImpName_args_sizes_get,
+    ImpName_clock_time_get,
+    ImpName_debug,
+    ImpName_debug_slice,
+    ImpName_environ_get,
+    ImpName_environ_sizes_get,
+    ImpName_fd_close,
+    ImpName_fd_fdstat_get,
+    ImpName_fd_filestat_get,
+    ImpName_fd_filestat_set_size,
+    ImpName_fd_filestat_set_times,
+    ImpName_fd_pread,
+    ImpName_fd_prestat_dir_name,
+    ImpName_fd_prestat_get,
+    ImpName_fd_pwrite,
+    ImpName_fd_read,
+    ImpName_fd_readdir,
+    ImpName_fd_write,
+    ImpName_path_create_directory,
+    ImpName_path_filestat_get,
+    ImpName_path_open,
+    ImpName_path_remove_directory,
+    ImpName_path_rename,
+    ImpName_path_unlink_file,
+    ImpName_proc_exit,
+    ImpName_random_get,
 };
 
 struct Import {
-    struct ByteSlice sym_name;
-    struct ByteSlice mod_name;
-    struct TypeInfo type_info;
+    enum ImpMod mod;
+    enum ImpName name;
+    uint32_t type_idx;
 };
 
 struct VirtualMachine {
@@ -406,7 +502,7 @@ struct VirtualMachine {
 };
 
 struct Label {
-    enum Op kind;
+    enum WasmOp opcode;
     uint32_t stack_depth;
     struct TypeInfo type_info;
     // this is a UINT32_MAX terminated linked list that is stored in the operands array
@@ -417,17 +513,19 @@ struct Label {
     } extra;
 };
 
-uint64_t offset_counts[2];
-uint64_t max_offset = 0;
-
-struct Label labels[500];
-uint64_t max_label_depth = 0;
-
 static uint32_t Label_operandCount(const struct Label *label) {
-    if (label->kind == Op_loop) {
+    if (label->opcode == WasmOp_loop) {
         return label->type_info.param_count;
     } else {
         return label->type_info.result_count;
+    }
+}
+
+static bool Label_operandType(const struct Label *label, uint32_t index) {
+    if (label->opcode == WasmOp_loop) {
+        return bs_isSet(&label->type_info.param_types, index);
+    } else {
+        return bs_isSet(&label->type_info.result_types, index);
     }
 }
 
@@ -437,338 +535,613 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
     const char *mod_ptr = vm->mod_ptr;
     uint8_t *opcodes = vm->opcodes;
     uint32_t *operands = vm->operands;
-    uint32_t stack_depth = func->type_info.param_count + func->locals_count + 2;
+    struct TypeInfo *func_type_info = &vm->types[func->type_idx];
+
+    uint32_t unreachable_depth = 0;
+    uint32_t stack_depth = func_type_info->param_count + func->locals_count + 2;
+    static uint32_t stack_types[1 << (12 - 3)];
+
+    static struct Label labels[1 << 9];
     uint32_t label_i = 0;
-    labels[label_i].kind = Op_block;
+    labels[label_i].opcode = WasmOp_block;
     labels[label_i].stack_depth = stack_depth;
-    labels[label_i].type_info = func->type_info;
+    labels[label_i].type_info = vm->types[func->type_idx];
     labels[label_i].ref_list = UINT32_MAX;
 
     for (;;) {
-        enum Op opcode = (uint8_t)mod_ptr[*code_i];
+        enum WasmOp opcode = (uint8_t)mod_ptr[*code_i];
         *code_i += 1;
+        enum WasmPrefixedOp prefixed_opcode;
+        if (opcode == WasmOp_prefixed) prefixed_opcode = read32_uleb128(mod_ptr, code_i);
 
         uint32_t initial_stack_depth = stack_depth;
-        enum PrefixedOp prefixed_opcode;
-        switch (opcode) {
-            case Op_unreachable:
-            case Op_nop:
-            case Op_block:
-            case Op_loop:
-            case Op_else:
-            case Op_end:
-            case Op_br:
-            case Op_call:
-            case Op_return:
-            break;
-
-            case Op_if:
-            case Op_br_if:
-            case Op_br_table:
-            case Op_call_indirect:
-            case Op_drop:
-            case Op_local_set:
-            case Op_global_set:
-            stack_depth -= 1;
-            break;
-
-            case Op_select:
-            stack_depth -= 2;
-            break;
-
-            case Op_local_get:
-            case Op_global_get:
-            case Op_memory_size:
-            case Op_i32_const:
-            case Op_i64_const:
-            case Op_f32_const:
-            case Op_f64_const:
-            stack_depth += 1;
-            break;
-
-            case Op_local_tee:
-            case Op_i32_load:
-            case Op_i64_load:
-            case Op_f32_load:
-            case Op_f64_load:
-            case Op_i32_load8_s:
-            case Op_i32_load8_u:
-            case Op_i32_load16_s:
-            case Op_i32_load16_u:
-            case Op_i64_load8_s:
-            case Op_i64_load8_u:
-            case Op_i64_load16_s:
-            case Op_i64_load16_u:
-            case Op_i64_load32_s:
-            case Op_i64_load32_u:
-            case Op_memory_grow:
-            case Op_i32_eqz:
-            case Op_i32_clz:
-            case Op_i32_ctz:
-            case Op_i32_popcnt:
-            case Op_i64_eqz:
-            case Op_i64_clz:
-            case Op_i64_ctz:
-            case Op_i64_popcnt:
-            case Op_f32_abs:
-            case Op_f32_neg:
-            case Op_f32_ceil:
-            case Op_f32_floor:
-            case Op_f32_trunc:
-            case Op_f32_nearest:
-            case Op_f32_sqrt:
-            case Op_f64_abs:
-            case Op_f64_neg:
-            case Op_f64_ceil:
-            case Op_f64_floor:
-            case Op_f64_trunc:
-            case Op_f64_nearest:
-            case Op_f64_sqrt:
-            case Op_i32_wrap_i64:
-            case Op_i32_trunc_f32_s:
-            case Op_i32_trunc_f32_u:
-            case Op_i32_trunc_f64_s:
-            case Op_i32_trunc_f64_u:
-            case Op_i64_extend_i32_s:
-            case Op_i64_extend_i32_u:
-            case Op_i64_trunc_f32_s:
-            case Op_i64_trunc_f32_u:
-            case Op_i64_trunc_f64_s:
-            case Op_i64_trunc_f64_u:
-            case Op_f32_convert_i32_s:
-            case Op_f32_convert_i32_u:
-            case Op_f32_convert_i64_s:
-            case Op_f32_convert_i64_u:
-            case Op_f32_demote_f64:
-            case Op_f64_convert_i32_s:
-            case Op_f64_convert_i32_u:
-            case Op_f64_convert_i64_s:
-            case Op_f64_convert_i64_u:
-            case Op_f64_promote_f32:
-            case Op_i32_reinterpret_f32:
-            case Op_i64_reinterpret_f64:
-            case Op_f32_reinterpret_i32:
-            case Op_f64_reinterpret_i64:
-            case Op_i32_extend8_s:
-            case Op_i32_extend16_s:
-            case Op_i64_extend8_s:
-            case Op_i64_extend16_s:
-            case Op_i64_extend32_s:
-            break;
-
-            case Op_i32_store:
-            case Op_i64_store:
-            case Op_f32_store:
-            case Op_f64_store:
-            case Op_i32_store8:
-            case Op_i32_store16:
-            case Op_i64_store8:
-            case Op_i64_store16:
-            case Op_i64_store32:
-            stack_depth -= 2;
-            break;
-
-            case Op_i32_eq:
-            case Op_i32_ne:
-            case Op_i32_lt_s:
-            case Op_i32_lt_u:
-            case Op_i32_gt_s:
-            case Op_i32_gt_u:
-            case Op_i32_le_s:
-            case Op_i32_le_u:
-            case Op_i32_ge_s:
-            case Op_i32_ge_u:
-            case Op_i64_eq:
-            case Op_i64_ne:
-            case Op_i64_lt_s:
-            case Op_i64_lt_u:
-            case Op_i64_gt_s:
-            case Op_i64_gt_u:
-            case Op_i64_le_s:
-            case Op_i64_le_u:
-            case Op_i64_ge_s:
-            case Op_i64_ge_u:
-            case Op_f32_eq:
-            case Op_f32_ne:
-            case Op_f32_lt:
-            case Op_f32_gt:
-            case Op_f32_le:
-            case Op_f32_ge:
-            case Op_f64_eq:
-            case Op_f64_ne:
-            case Op_f64_lt:
-            case Op_f64_gt:
-            case Op_f64_le:
-            case Op_f64_ge:
-            case Op_i32_add:
-            case Op_i32_sub:
-            case Op_i32_mul:
-            case Op_i32_div_s:
-            case Op_i32_div_u:
-            case Op_i32_rem_s:
-            case Op_i32_rem_u:
-            case Op_i32_and:
-            case Op_i32_or:
-            case Op_i32_xor:
-            case Op_i32_shl:
-            case Op_i32_shr_s:
-            case Op_i32_shr_u:
-            case Op_i32_rotl:
-            case Op_i32_rotr:
-            case Op_i64_add:
-            case Op_i64_sub:
-            case Op_i64_mul:
-            case Op_i64_div_s:
-            case Op_i64_div_u:
-            case Op_i64_rem_s:
-            case Op_i64_rem_u:
-            case Op_i64_and:
-            case Op_i64_or:
-            case Op_i64_xor:
-            case Op_i64_shl:
-            case Op_i64_shr_s:
-            case Op_i64_shr_u:
-            case Op_i64_rotl:
-            case Op_i64_rotr:
-            case Op_f32_add:
-            case Op_f32_sub:
-            case Op_f32_mul:
-            case Op_f32_div:
-            case Op_f32_min:
-            case Op_f32_max:
-            case Op_f32_copysign:
-            case Op_f64_add:
-            case Op_f64_sub:
-            case Op_f64_mul:
-            case Op_f64_div:
-            case Op_f64_min:
-            case Op_f64_max:
-            case Op_f64_copysign:
-            stack_depth -= 1;
-            break;
-
-            case Op_prefixed:
-            prefixed_opcode = read32_uleb128(mod_ptr, code_i);
-            switch (prefixed_opcode) {
-                case PrefixedOp_i32_trunc_sat_f32_s:
-                case PrefixedOp_i32_trunc_sat_f32_u:
-                case PrefixedOp_i32_trunc_sat_f64_s:
-                case PrefixedOp_i32_trunc_sat_f64_u:
-                case PrefixedOp_i64_trunc_sat_f32_s:
-                case PrefixedOp_i64_trunc_sat_f32_u:
-                case PrefixedOp_i64_trunc_sat_f64_s:
-                case PrefixedOp_i64_trunc_sat_f64_u:
+        if (unreachable_depth == 0) {
+            switch (opcode) {
+                case WasmOp_unreachable:
+                case WasmOp_nop:
+                case WasmOp_block:
+                case WasmOp_loop:
+                case WasmOp_else:
+                case WasmOp_end:
+                case WasmOp_br:
+                case WasmOp_call:
+                case WasmOp_return:
                 break;
 
-                case PrefixedOp_memory_init:
-                case PrefixedOp_memory_copy:
-                case PrefixedOp_memory_fill:
-                case PrefixedOp_table_init:
-                case PrefixedOp_table_copy:
-                case PrefixedOp_table_fill:
-                stack_depth -= 3;
-                break;
-
-                case PrefixedOp_data_drop:
-                case PrefixedOp_elem_drop:
-                break;
-
-                case PrefixedOp_table_grow:
+                case WasmOp_if:
+                case WasmOp_br_if:
+                case WasmOp_br_table:
+                case WasmOp_call_indirect:
+                case WasmOp_drop:
+                case WasmOp_local_set:
+                case WasmOp_global_set:
                 stack_depth -= 1;
                 break;
 
-                case PrefixedOp_table_size:
+                case WasmOp_select:
+                stack_depth -= 2;
+                break;
+
+                case WasmOp_local_get:
+                case WasmOp_global_get:
+                case WasmOp_memory_size:
+                case WasmOp_i32_const:
+                case WasmOp_i64_const:
+                case WasmOp_f32_const:
+                case WasmOp_f64_const:
                 stack_depth += 1;
                 break;
 
-                default: panic("unreachable");
+                case WasmOp_local_tee:
+                case WasmOp_i32_load:
+                case WasmOp_i64_load:
+                case WasmOp_f32_load:
+                case WasmOp_f64_load:
+                case WasmOp_i32_load8_s:
+                case WasmOp_i32_load8_u:
+                case WasmOp_i32_load16_s:
+                case WasmOp_i32_load16_u:
+                case WasmOp_i64_load8_s:
+                case WasmOp_i64_load8_u:
+                case WasmOp_i64_load16_s:
+                case WasmOp_i64_load16_u:
+                case WasmOp_i64_load32_s:
+                case WasmOp_i64_load32_u:
+                case WasmOp_memory_grow:
+                case WasmOp_i32_eqz:
+                case WasmOp_i32_clz:
+                case WasmOp_i32_ctz:
+                case WasmOp_i32_popcnt:
+                case WasmOp_i64_eqz:
+                case WasmOp_i64_clz:
+                case WasmOp_i64_ctz:
+                case WasmOp_i64_popcnt:
+                case WasmOp_f32_abs:
+                case WasmOp_f32_neg:
+                case WasmOp_f32_ceil:
+                case WasmOp_f32_floor:
+                case WasmOp_f32_trunc:
+                case WasmOp_f32_nearest:
+                case WasmOp_f32_sqrt:
+                case WasmOp_f64_abs:
+                case WasmOp_f64_neg:
+                case WasmOp_f64_ceil:
+                case WasmOp_f64_floor:
+                case WasmOp_f64_trunc:
+                case WasmOp_f64_nearest:
+                case WasmOp_f64_sqrt:
+                case WasmOp_i32_wrap_i64:
+                case WasmOp_i32_trunc_f32_s:
+                case WasmOp_i32_trunc_f32_u:
+                case WasmOp_i32_trunc_f64_s:
+                case WasmOp_i32_trunc_f64_u:
+                case WasmOp_i64_extend_i32_s:
+                case WasmOp_i64_extend_i32_u:
+                case WasmOp_i64_trunc_f32_s:
+                case WasmOp_i64_trunc_f32_u:
+                case WasmOp_i64_trunc_f64_s:
+                case WasmOp_i64_trunc_f64_u:
+                case WasmOp_f32_convert_i32_s:
+                case WasmOp_f32_convert_i32_u:
+                case WasmOp_f32_convert_i64_s:
+                case WasmOp_f32_convert_i64_u:
+                case WasmOp_f32_demote_f64:
+                case WasmOp_f64_convert_i32_s:
+                case WasmOp_f64_convert_i32_u:
+                case WasmOp_f64_convert_i64_s:
+                case WasmOp_f64_convert_i64_u:
+                case WasmOp_f64_promote_f32:
+                case WasmOp_i32_reinterpret_f32:
+                case WasmOp_i64_reinterpret_f64:
+                case WasmOp_f32_reinterpret_i32:
+                case WasmOp_f64_reinterpret_i64:
+                case WasmOp_i32_extend8_s:
+                case WasmOp_i32_extend16_s:
+                case WasmOp_i64_extend8_s:
+                case WasmOp_i64_extend16_s:
+                case WasmOp_i64_extend32_s:
+                break;
+
+                case WasmOp_i32_store:
+                case WasmOp_i64_store:
+                case WasmOp_f32_store:
+                case WasmOp_f64_store:
+                case WasmOp_i32_store8:
+                case WasmOp_i32_store16:
+                case WasmOp_i64_store8:
+                case WasmOp_i64_store16:
+                case WasmOp_i64_store32:
+                stack_depth -= 2;
+                break;
+
+                case WasmOp_i32_eq:
+                case WasmOp_i32_ne:
+                case WasmOp_i32_lt_s:
+                case WasmOp_i32_lt_u:
+                case WasmOp_i32_gt_s:
+                case WasmOp_i32_gt_u:
+                case WasmOp_i32_le_s:
+                case WasmOp_i32_le_u:
+                case WasmOp_i32_ge_s:
+                case WasmOp_i32_ge_u:
+                case WasmOp_i64_eq:
+                case WasmOp_i64_ne:
+                case WasmOp_i64_lt_s:
+                case WasmOp_i64_lt_u:
+                case WasmOp_i64_gt_s:
+                case WasmOp_i64_gt_u:
+                case WasmOp_i64_le_s:
+                case WasmOp_i64_le_u:
+                case WasmOp_i64_ge_s:
+                case WasmOp_i64_ge_u:
+                case WasmOp_f32_eq:
+                case WasmOp_f32_ne:
+                case WasmOp_f32_lt:
+                case WasmOp_f32_gt:
+                case WasmOp_f32_le:
+                case WasmOp_f32_ge:
+                case WasmOp_f64_eq:
+                case WasmOp_f64_ne:
+                case WasmOp_f64_lt:
+                case WasmOp_f64_gt:
+                case WasmOp_f64_le:
+                case WasmOp_f64_ge:
+                case WasmOp_i32_add:
+                case WasmOp_i32_sub:
+                case WasmOp_i32_mul:
+                case WasmOp_i32_div_s:
+                case WasmOp_i32_div_u:
+                case WasmOp_i32_rem_s:
+                case WasmOp_i32_rem_u:
+                case WasmOp_i32_and:
+                case WasmOp_i32_or:
+                case WasmOp_i32_xor:
+                case WasmOp_i32_shl:
+                case WasmOp_i32_shr_s:
+                case WasmOp_i32_shr_u:
+                case WasmOp_i32_rotl:
+                case WasmOp_i32_rotr:
+                case WasmOp_i64_add:
+                case WasmOp_i64_sub:
+                case WasmOp_i64_mul:
+                case WasmOp_i64_div_s:
+                case WasmOp_i64_div_u:
+                case WasmOp_i64_rem_s:
+                case WasmOp_i64_rem_u:
+                case WasmOp_i64_and:
+                case WasmOp_i64_or:
+                case WasmOp_i64_xor:
+                case WasmOp_i64_shl:
+                case WasmOp_i64_shr_s:
+                case WasmOp_i64_shr_u:
+                case WasmOp_i64_rotl:
+                case WasmOp_i64_rotr:
+                case WasmOp_f32_add:
+                case WasmOp_f32_sub:
+                case WasmOp_f32_mul:
+                case WasmOp_f32_div:
+                case WasmOp_f32_min:
+                case WasmOp_f32_max:
+                case WasmOp_f32_copysign:
+                case WasmOp_f64_add:
+                case WasmOp_f64_sub:
+                case WasmOp_f64_mul:
+                case WasmOp_f64_div:
+                case WasmOp_f64_min:
+                case WasmOp_f64_max:
+                case WasmOp_f64_copysign:
+                stack_depth -= 1;
+                break;
+
+                case WasmOp_prefixed:
+                switch (prefixed_opcode) {
+                    case WasmPrefixedOp_i32_trunc_sat_f32_s:
+                    case WasmPrefixedOp_i32_trunc_sat_f32_u:
+                    case WasmPrefixedOp_i32_trunc_sat_f64_s:
+                    case WasmPrefixedOp_i32_trunc_sat_f64_u:
+                    case WasmPrefixedOp_i64_trunc_sat_f32_s:
+                    case WasmPrefixedOp_i64_trunc_sat_f32_u:
+                    case WasmPrefixedOp_i64_trunc_sat_f64_s:
+                    case WasmPrefixedOp_i64_trunc_sat_f64_u:
+                    break;
+
+                    case WasmPrefixedOp_memory_init:
+                    case WasmPrefixedOp_memory_copy:
+                    case WasmPrefixedOp_memory_fill:
+                    case WasmPrefixedOp_table_init:
+                    case WasmPrefixedOp_table_copy:
+                    case WasmPrefixedOp_table_fill:
+                    stack_depth -= 3;
+                    break;
+
+                    case WasmPrefixedOp_data_drop:
+                    case WasmPrefixedOp_elem_drop:
+                    break;
+
+                    case WasmPrefixedOp_table_grow:
+                    stack_depth -= 1;
+                    break;
+
+                    case WasmPrefixedOp_table_size:
+                    stack_depth += 1;
+                    break;
+
+                    default: panic("unexpected prefixed opcode");
+                }
+                break;
+
+                default: panic("unexpected opcode");
+            }
+            switch (opcode) {
+                case WasmOp_unreachable:
+                case WasmOp_nop:
+                case WasmOp_block:
+                case WasmOp_loop:
+                case WasmOp_else:
+                case WasmOp_end:
+                case WasmOp_br:
+                case WasmOp_call:
+                case WasmOp_return:
+                case WasmOp_if:
+                case WasmOp_br_if:
+                case WasmOp_br_table:
+                case WasmOp_call_indirect:
+                case WasmOp_drop:
+                case WasmOp_select:
+                case WasmOp_local_set:
+                case WasmOp_local_get:
+                case WasmOp_local_tee:
+                case WasmOp_global_set:
+                case WasmOp_global_get:
+                case WasmOp_i32_store:
+                case WasmOp_i64_store:
+                case WasmOp_f32_store:
+                case WasmOp_f64_store:
+                case WasmOp_i32_store8:
+                case WasmOp_i32_store16:
+                case WasmOp_i64_store8:
+                case WasmOp_i64_store16:
+                case WasmOp_i64_store32:
+                break;
+
+                case WasmOp_i32_const:
+                case WasmOp_f32_const:
+                case WasmOp_memory_size:
+                case WasmOp_i32_load:
+                case WasmOp_f32_load:
+                case WasmOp_i32_load8_s:
+                case WasmOp_i32_load8_u:
+                case WasmOp_i32_load16_s:
+                case WasmOp_i32_load16_u:
+                case WasmOp_memory_grow:
+                case WasmOp_i32_eqz:
+                case WasmOp_i32_clz:
+                case WasmOp_i32_ctz:
+                case WasmOp_i32_popcnt:
+                case WasmOp_i64_eqz:
+                case WasmOp_f32_abs:
+                case WasmOp_f32_neg:
+                case WasmOp_f32_ceil:
+                case WasmOp_f32_floor:
+                case WasmOp_f32_trunc:
+                case WasmOp_f32_nearest:
+                case WasmOp_f32_sqrt:
+                case WasmOp_i32_wrap_i64:
+                case WasmOp_i32_trunc_f32_s:
+                case WasmOp_i32_trunc_f32_u:
+                case WasmOp_i32_trunc_f64_s:
+                case WasmOp_i32_trunc_f64_u:
+                case WasmOp_f32_convert_i32_s:
+                case WasmOp_f32_convert_i32_u:
+                case WasmOp_f32_convert_i64_s:
+                case WasmOp_f32_convert_i64_u:
+                case WasmOp_f32_demote_f64:
+                case WasmOp_i32_reinterpret_f32:
+                case WasmOp_f32_reinterpret_i32:
+                case WasmOp_i32_extend8_s:
+                case WasmOp_i32_extend16_s:
+                case WasmOp_i32_eq:
+                case WasmOp_i32_ne:
+                case WasmOp_i32_lt_s:
+                case WasmOp_i32_lt_u:
+                case WasmOp_i32_gt_s:
+                case WasmOp_i32_gt_u:
+                case WasmOp_i32_le_s:
+                case WasmOp_i32_le_u:
+                case WasmOp_i32_ge_s:
+                case WasmOp_i32_ge_u:
+                case WasmOp_i64_eq:
+                case WasmOp_i64_ne:
+                case WasmOp_i64_lt_s:
+                case WasmOp_i64_lt_u:
+                case WasmOp_i64_gt_s:
+                case WasmOp_i64_gt_u:
+                case WasmOp_i64_le_s:
+                case WasmOp_i64_le_u:
+                case WasmOp_i64_ge_s:
+                case WasmOp_i64_ge_u:
+                case WasmOp_f32_eq:
+                case WasmOp_f32_ne:
+                case WasmOp_f32_lt:
+                case WasmOp_f32_gt:
+                case WasmOp_f32_le:
+                case WasmOp_f32_ge:
+                case WasmOp_f64_eq:
+                case WasmOp_f64_ne:
+                case WasmOp_f64_lt:
+                case WasmOp_f64_gt:
+                case WasmOp_f64_le:
+                case WasmOp_f64_ge:
+                case WasmOp_i32_add:
+                case WasmOp_i32_sub:
+                case WasmOp_i32_mul:
+                case WasmOp_i32_div_s:
+                case WasmOp_i32_div_u:
+                case WasmOp_i32_rem_s:
+                case WasmOp_i32_rem_u:
+                case WasmOp_i32_and:
+                case WasmOp_i32_or:
+                case WasmOp_i32_xor:
+                case WasmOp_i32_shl:
+                case WasmOp_i32_shr_s:
+                case WasmOp_i32_shr_u:
+                case WasmOp_i32_rotl:
+                case WasmOp_i32_rotr:
+                case WasmOp_f32_add:
+                case WasmOp_f32_sub:
+                case WasmOp_f32_mul:
+                case WasmOp_f32_div:
+                case WasmOp_f32_min:
+                case WasmOp_f32_max:
+                case WasmOp_f32_copysign:
+                bs_unset(stack_types, stack_depth - 1);
+                break;
+
+                case WasmOp_i64_const:
+                case WasmOp_f64_const:
+                case WasmOp_i64_load:
+                case WasmOp_f64_load:
+                case WasmOp_i64_load8_s:
+                case WasmOp_i64_load8_u:
+                case WasmOp_i64_load16_s:
+                case WasmOp_i64_load16_u:
+                case WasmOp_i64_load32_s:
+                case WasmOp_i64_load32_u:
+                case WasmOp_i64_clz:
+                case WasmOp_i64_ctz:
+                case WasmOp_i64_popcnt:
+                case WasmOp_f64_abs:
+                case WasmOp_f64_neg:
+                case WasmOp_f64_ceil:
+                case WasmOp_f64_floor:
+                case WasmOp_f64_trunc:
+                case WasmOp_f64_nearest:
+                case WasmOp_f64_sqrt:
+                case WasmOp_i64_extend_i32_s:
+                case WasmOp_i64_extend_i32_u:
+                case WasmOp_i64_trunc_f32_s:
+                case WasmOp_i64_trunc_f32_u:
+                case WasmOp_i64_trunc_f64_s:
+                case WasmOp_i64_trunc_f64_u:
+                case WasmOp_f64_convert_i32_s:
+                case WasmOp_f64_convert_i32_u:
+                case WasmOp_f64_convert_i64_s:
+                case WasmOp_f64_convert_i64_u:
+                case WasmOp_f64_promote_f32:
+                case WasmOp_i64_reinterpret_f64:
+                case WasmOp_f64_reinterpret_i64:
+                case WasmOp_i64_extend8_s:
+                case WasmOp_i64_extend16_s:
+                case WasmOp_i64_extend32_s:
+                case WasmOp_i64_add:
+                case WasmOp_i64_sub:
+                case WasmOp_i64_mul:
+                case WasmOp_i64_div_s:
+                case WasmOp_i64_div_u:
+                case WasmOp_i64_rem_s:
+                case WasmOp_i64_rem_u:
+                case WasmOp_i64_and:
+                case WasmOp_i64_or:
+                case WasmOp_i64_xor:
+                case WasmOp_i64_shl:
+                case WasmOp_i64_shr_s:
+                case WasmOp_i64_shr_u:
+                case WasmOp_i64_rotl:
+                case WasmOp_i64_rotr:
+                case WasmOp_f64_add:
+                case WasmOp_f64_sub:
+                case WasmOp_f64_mul:
+                case WasmOp_f64_div:
+                case WasmOp_f64_min:
+                case WasmOp_f64_max:
+                case WasmOp_f64_copysign:
+                bs_set(stack_types, stack_depth - 1);
+                break;
+
+                case WasmOp_prefixed:
+                switch (prefixed_opcode) {
+                    case WasmPrefixedOp_memory_init:
+                    case WasmPrefixedOp_memory_copy:
+                    case WasmPrefixedOp_memory_fill:
+                    case WasmPrefixedOp_table_init:
+                    case WasmPrefixedOp_table_copy:
+                    case WasmPrefixedOp_table_fill:
+                    case WasmPrefixedOp_data_drop:
+                    case WasmPrefixedOp_elem_drop:
+                    break;
+
+                    case WasmPrefixedOp_i32_trunc_sat_f32_s:
+                    case WasmPrefixedOp_i32_trunc_sat_f32_u:
+                    case WasmPrefixedOp_i32_trunc_sat_f64_s:
+                    case WasmPrefixedOp_i32_trunc_sat_f64_u:
+                    case WasmPrefixedOp_table_grow:
+                    case WasmPrefixedOp_table_size:
+                    bs_unset(stack_types, stack_depth - 1);
+                    break;
+
+                    case WasmPrefixedOp_i64_trunc_sat_f32_s:
+                    case WasmPrefixedOp_i64_trunc_sat_f32_u:
+                    case WasmPrefixedOp_i64_trunc_sat_f64_s:
+                    case WasmPrefixedOp_i64_trunc_sat_f64_u:
+                    bs_set(stack_types, stack_depth - 1);
+                    break;
+
+                    default: panic("unexpected prefixed opcode");
+                }
+                break;
+
+                default: panic("unexpected opcode");
             }
         }
 
         switch (opcode) {
-            case Op_block:
-            case Op_loop:
-            case Op_if:
+            case WasmOp_unreachable:
+            if (unreachable_depth == 0) {
+                opcodes[pc->opcode] = Op_unreachable;
+                pc->opcode += 1;
+            }
+            break;
+
+            case WasmOp_nop:
+            break;
+
+            case WasmOp_block:
+            case WasmOp_loop:
+            case WasmOp_if:
             {
-                label_i += 1;
-                max_label_depth = (label_i > max_label_depth) ? label_i : max_label_depth;
-                struct Label *label = &labels[label_i];
                 int64_t block_type = read64_ileb128(mod_ptr, code_i);
-                struct TypeInfo type_info;
-                if (block_type < 0) {
-                    type_info.param_count = 0;
-                    type_info.result_count = block_type != -0x40;
-                } else {
-                    type_info = vm->types[block_type];
-                }
-                label->kind = opcode;
-                label->stack_depth = stack_depth - type_info.param_count;
-                label->type_info = type_info;
-                label->ref_list = UINT32_MAX;
-                switch (opcode) {
-                    case Op_loop:
-                    label->extra.loop_pc = *pc;
-                    break;
+                if (unreachable_depth == 0) {
+                    label_i += 1;
+                    struct Label *label = &labels[label_i];
+                    label->opcode = opcode;
+                    if (block_type < 0) {
+                        label->type_info.param_count = 0;
+                        label->type_info.param_types = 0;
+                        label->type_info.result_count = block_type != -0x40;
+                        label->type_info.result_types = 0;
+                        switch (block_type) {
+                            case -0x40: break;
+                            case -1: case -3: bs_unset(&label->type_info.param_types, 0); break;
+                            case -2: case -4:   bs_set(&label->type_info.param_types, 0); break;
+                            default: panic("unexpected param type");
+                        }
+                    } else {
+                        label->type_info = vm->types[block_type];
+                    }
+                    label->stack_depth = stack_depth - label->type_info.param_count;
+                    label->ref_list = UINT32_MAX;
+                    switch (opcode) {
+                        case WasmOp_block:
+                        break;
 
-                    case Op_if:
-                    opcodes[pc->opcode] = Op_i32_eqz;
-                    opcodes[pc->opcode + 1] = Op_br_if;
-                    pc->opcode += 2;
-                    operands[pc->operand] = type_info.param_count;
-                    label->extra.else_ref = pc->operand + 1;
-                    pc->operand += 3;
-                    break;
+                        case WasmOp_loop:
+                        label->extra.loop_pc = *pc;
+                        break;
 
-                    default:
-                    break;
+                        case WasmOp_if:
+                        opcodes[pc->opcode] = Op_br_if_eqz_void;
+                        pc->opcode += 1;
+                        operands[pc->operand] = 0;
+                        label->extra.else_ref = pc->operand + 1;
+                        pc->operand += 3;
+                        break;
+
+                        default: panic("unexpected label opcode");
+                    }
                 }
             }
             break;
 
-            case Op_else:
+            case WasmOp_else:
             {
-                struct Label * label = &labels[label_i];
-                assert(label->kind == Op_if);
-                label->kind = opcode;
-                uint32_t operand_count = Label_operandCount(label);
-                opcodes[pc->opcode] = Op_br;
-                pc->opcode += 1;
-                operands[pc->operand] = operand_count |
-                    ((stack_depth - operand_count - label->stack_depth) << 1);
-                operands[pc->operand + 1] = label->ref_list;
-                label->ref_list = pc->operand + 1;
-                pc->operand += 3;
-                operands[label->extra.else_ref] = pc->opcode;
+                struct Label *label = &labels[label_i];
+                assert(label->opcode == WasmOp_if);
+                label->opcode = WasmOp_else;
+                if (unreachable_depth == 0) {
+                    uint32_t operand_count = Label_operandCount(label);
+                    switch (operand_count) {
+                        case 0:
+                        opcodes[pc->opcode] = Op_br_void;
+                        break;
+
+                        case 1:
+                        switch ((int)Label_operandType(label, 0)) {
+                            case false: opcodes[pc->opcode] = Op_br_32; break;
+                            case  true: opcodes[pc->opcode] = Op_br_64; break;
+                        }
+                        break;
+
+                        default: panic("unexpected operand count");
+                    }
+                    pc->opcode += 1;
+                    operands[pc->operand + 0] = stack_depth - operand_count - label->stack_depth;
+                    operands[pc->operand + 1] = label->ref_list;
+                    label->ref_list = pc->operand + 1;
+                    pc->operand += 3;
+                    assert(stack_depth - label->type_info.result_count == label->stack_depth);
+                } else unreachable_depth = 0;
+                operands[label->extra.else_ref + 0] = pc->opcode;
                 operands[label->extra.else_ref + 1] = pc->operand;
-                assert(stack_depth > UINT32_MAX / 4 ||
-                    stack_depth - label->type_info.result_count == label->stack_depth);
                 stack_depth = label->stack_depth + label->type_info.param_count;
             };
             break;
 
-            case Op_end:
-            {
-                struct Label * label = &labels[label_i];
-                struct ProgramCounter *target_pc = (label->kind == Op_loop) ? &label->extra.loop_pc : pc;
-                if (label->kind == Op_if) {
-                    operands[label->extra.else_ref] = target_pc->opcode;
+            case WasmOp_end:
+            if (unreachable_depth <= 1) {
+                unreachable_depth = 0;
+                struct Label *label = &labels[label_i];
+                struct ProgramCounter *target_pc = (label->opcode == WasmOp_loop) ? &label->extra.loop_pc : pc;
+                if (label->opcode == WasmOp_if) {
+                    operands[label->extra.else_ref + 0] = target_pc->opcode;
                     operands[label->extra.else_ref + 1] = target_pc->operand;
                 }
                 uint32_t ref = label->ref_list;
                 while (ref != UINT32_MAX) {
                     uint32_t next_ref = operands[ref];
-                    operands[ref] = target_pc->opcode;
+                    operands[ref + 0] = target_pc->opcode;
                     operands[ref + 1] = target_pc->operand;
                     ref = next_ref;
                 }
-                uint32_t result_stack_depth = label->stack_depth + label->type_info.result_count;
-                assert((stack_depth > UINT32_MAX / 4) || (stack_depth == result_stack_depth));
-                stack_depth = result_stack_depth;
+                stack_depth = label->stack_depth + label->type_info.result_count;
+
                 if (label_i == 0) {
-                    opcodes[pc->opcode] = Op_return;
-                    pc->opcode += 1;
                     uint32_t operand_count = Label_operandCount(&labels[0]);
-                    operands[pc->operand] = operand_count | ((2 + operand_count) << 1);
+                    switch (operand_count) {
+                        case 0:
+                        opcodes[pc->opcode] = Op_return_void;
+                        break;
+
+                        case 1:
+                        switch ((int)Label_operandType(&labels[0], 0)) {
+                            case false: opcodes[pc->opcode] = Op_return_32; break;
+                            case  true: opcodes[pc->opcode] = Op_return_64; break;
+                        }
+                        break;
+
+                        default: panic("unexpected operand count");
+                    }
+                    pc->opcode += 1;
+                    operands[pc->operand + 0] = 2 + operand_count;
                     stack_depth -= operand_count;
                     assert(stack_depth == labels[0].stack_depth);
                     operands[pc->operand + 1] = stack_depth;
@@ -776,38 +1149,55 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
                     return;
                 }
                 label_i -= 1;
-            }
+            } else unreachable_depth -= 1;
             break;
 
-            case Op_br:
-            case Op_br_if:
+            case WasmOp_br:
+            case WasmOp_br_if:
             {
                 uint32_t label_idx = read32_uleb128(mod_ptr, code_i);
-                struct Label * label = &labels[label_i - label_idx];
-                uint32_t operand_count = Label_operandCount(label);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = operand_count |
-                    ((stack_depth - operand_count - label->stack_depth) << 1);
-                operands[pc->operand + 1] = label->ref_list;
-                label->ref_list = pc->operand + 1;
-                pc->operand += 3;
-            }
-            break;
-
-            case Op_br_table:
-            {
-                uint32_t labels_len = read32_uleb128(mod_ptr, code_i);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = labels_len;
-                pc->operand += 1;
-                for (uint32_t i = 0; i <= labels_len; i += 1) {
-                    uint32_t label_idx = read32_uleb128(mod_ptr, code_i);
-                    struct Label * label = &labels[label_i - label_idx];
+                if (unreachable_depth == 0) {
+                    struct Label *label = &labels[label_i - label_idx];
                     uint32_t operand_count = Label_operandCount(label);
-                    operands[pc->operand] = operand_count |
-                        ((stack_depth - operand_count - label->stack_depth) << 1);
+                    switch (opcode) {
+                        case WasmOp_br:
+                        switch (operand_count) {
+                            case 0:
+                            opcodes[pc->opcode] = Op_br_void;
+                            break;
+
+                            case 1:
+                            switch ((int)Label_operandType(label, 0)) {
+                                case false: opcodes[pc->opcode] = Op_br_32; break;
+                                case  true: opcodes[pc->opcode] = Op_br_64; break;
+                            }
+                            break;
+
+                            default: panic("unexpected operand count");
+                        }
+                        break;
+
+                        case WasmOp_br_if:
+                        switch (operand_count) {
+                            case 0:
+                            opcodes[pc->opcode] = Op_br_if_nez_void;
+                            break;
+
+                            case 1:
+                            switch ((int)Label_operandType(label, 0)) {
+                                case false: opcodes[pc->opcode] = Op_br_if_nez_32; break;
+                                case  true: opcodes[pc->opcode] = Op_br_if_nez_64; break;
+                            }
+                            break;
+
+                            default: panic("unexpected operand count");
+                        }
+                        break;
+
+                        default: panic("unexpected opcode");
+                    }
+                    pc->opcode += 1;
+                    operands[pc->operand + 0] = stack_depth - operand_count - label->stack_depth;
                     operands[pc->operand + 1] = label->ref_list;
                     label->ref_list = pc->operand + 1;
                     pc->operand += 3;
@@ -815,205 +1205,404 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
             }
             break;
 
-            case Op_call:
+            case WasmOp_br_table:
+            {
+                uint32_t labels_len = read32_uleb128(mod_ptr, code_i);
+                for (uint32_t i = 0; i <= labels_len; i += 1) {
+                    uint32_t label_idx = read32_uleb128(mod_ptr, code_i);
+                    if (unreachable_depth != 0) continue;
+                    struct Label *label = &labels[label_i - label_idx];
+                    uint32_t operand_count = Label_operandCount(label);
+                    if (i == 0) {
+                        switch (operand_count) {
+                            case 0:
+                            opcodes[pc->opcode] = Op_br_table_void;
+                            break;
+
+                            case 1:
+                            switch ((int)Label_operandType(label, 0)) {
+                                case false: opcodes[pc->opcode] = Op_br_table_32; break;
+                                case  true: opcodes[pc->opcode] = Op_br_table_64; break;
+                            }
+                            break;
+
+                            default: panic("unexpected operand count");
+                        }
+                        pc->opcode += 1;
+                        operands[pc->operand] = labels_len;
+                        pc->operand += 1;
+                    }
+                    operands[pc->operand + 0] = stack_depth - operand_count - label->stack_depth;
+                    operands[pc->operand + 1] = label->ref_list;
+                    label->ref_list = pc->operand + 1;
+                    pc->operand += 3;
+                }
+
+                opcodes[pc->opcode] = opcode;
+                pc->opcode += 1;
+                operands[pc->operand] = labels_len;
+                pc->operand += 1;
+            }
+            break;
+
+            case WasmOp_call:
             {
                 uint32_t fn_id = read32_uleb128(mod_ptr, code_i);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = fn_id;
-                pc->operand += 1;
-                struct TypeInfo type_info = (fn_id < vm->imports_len) ?
-                    vm->imports[fn_id].type_info :
-                    vm->functions[fn_id - vm->imports_len].type_info;
-                stack_depth = stack_depth - type_info.param_count + type_info.result_count;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode] = Op_call;
+                    pc->opcode += 1;
+                    operands[pc->operand] = fn_id;
+                    pc->operand += 1;
+                    uint32_t type_idx = (fn_id < vm->imports_len) ?
+                        vm->imports[fn_id].type_idx :
+                        vm->functions[fn_id - vm->imports_len].type_idx;
+                    struct TypeInfo *type_info = &vm->types[type_idx];
+                    stack_depth -= type_info->param_count;
+                    for (uint32_t result_i = 0; result_i < type_info->result_count; result_i += 1)
+                        bs_setValue(stack_types, stack_depth + result_i,
+                                    bs_isSet(&type_info->result_types, result_i));
+                    stack_depth += type_info->result_count;
+                }
             }
             break;
 
-            case Op_call_indirect:
+            case WasmOp_call_indirect:
             {
                 uint32_t type_idx = read32_uleb128(mod_ptr, code_i);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                if (read32_uleb128(mod_ptr, code_i) != 0) panic("expected zero");
-                struct TypeInfo info = vm->types[type_idx];
-                stack_depth = stack_depth - info.param_count + info.result_count;
+                if (read32_uleb128(mod_ptr, code_i) != 0) panic("unexpected table index");
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm;
+                    opcodes[pc->opcode + 1] = opcode;
+                    pc->opcode += 2;
+                    struct TypeInfo *type_info = &vm->types[type_idx];
+                    stack_depth -= type_info->param_count;
+                    for (uint32_t result_i = 0; result_i < type_info->result_count; result_i += 1)
+                        bs_setValue(stack_types, stack_depth + result_i,
+                                    bs_isSet(&type_info->result_types, result_i));
+                    stack_depth += type_info->result_count;
+                }
             }
             break;
 
-            case Op_return:
+            case WasmOp_return:
             {
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
                 uint32_t operand_count = Label_operandCount(&labels[0]);
-                operands[pc->operand] = operand_count |
-                    ((2 + stack_depth - labels[0].stack_depth) << 1);
+                switch (operand_count) {
+                    case 0:
+                    opcodes[pc->opcode] = Op_return_void;
+                    break;
+
+                    case 1:
+                    switch ((int)Label_operandType(&labels[0], 0)) {
+                        case false: opcodes[pc->opcode] = Op_return_32; break;
+                        case  true: opcodes[pc->opcode] = Op_return_64; break;
+                    }
+                    break;
+
+                    default: panic("unexpected operand count");
+                }
+                pc->opcode += 1;
+                operands[pc->operand + 0] = 2 + stack_depth - labels[0].stack_depth;
                 stack_depth -= operand_count;
                 operands[pc->operand + 1] = stack_depth;
                 pc->operand += 2;
             }
             break;
 
-            case Op_local_get:
-            case Op_local_set:
-            case Op_local_tee:
+            case WasmOp_local_get:
+            case WasmOp_local_set:
+            case WasmOp_local_tee:
             {
                 uint32_t local_idx = read32_uleb128(mod_ptr, code_i);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = initial_stack_depth - local_idx;
-                pc->operand += 1;
+                if (unreachable_depth == 0) {
+                    bool local_type = bs_isSet(func->local_types, local_idx);
+                    switch ((int)local_type) {
+                        case false:
+                        switch (opcode) {
+                            case WasmOp_local_get:
+                            opcodes[pc->opcode] = Op_local_get_32;
+                            break;
+
+                            case WasmOp_local_set:
+                            opcodes[pc->opcode] = Op_local_set_32;
+                            break;
+
+                            case WasmOp_local_tee:
+                            opcodes[pc->opcode] = Op_local_tee_32;
+                            break;
+
+                            default: panic("unexpected opcode");
+                        }
+                        break;
+
+                        case true:
+                        switch (opcode) {
+                            case WasmOp_local_get:
+                            opcodes[pc->opcode] = Op_local_get_64;
+                            break;
+
+                            case WasmOp_local_set:
+                            opcodes[pc->opcode] = Op_local_set_64;
+                            break;
+
+                            case WasmOp_local_tee:
+                            opcodes[pc->opcode] = Op_local_tee_64;
+                            break;
+
+                            default: panic("unexpected opcode");
+                        }
+                        break;
+                    }
+                    pc->opcode += 1;
+                    operands[pc->operand] = initial_stack_depth - local_idx;
+                    pc->operand += 1;
+                    if (opcode == WasmOp_local_get) bs_setValue(stack_types, stack_depth - 1, local_type);
+                }
             }
             break;
 
-            case Op_global_get:
-            case Op_global_set:
+            case WasmOp_global_get:
+            case WasmOp_global_set:
             {
                 uint32_t global_idx = read32_uleb128(mod_ptr, code_i);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = global_idx;
-                pc->operand += 1;
+                if (unreachable_depth == 0) {
+                    switch (global_idx) {
+                        case 0:
+                        switch (opcode) {
+                            case WasmOp_global_get:
+                            opcodes[pc->opcode] = Op_global_get_0_32;
+                            break;
+
+                            case WasmOp_global_set:
+                            opcodes[pc->opcode] = Op_global_set_0_32;
+                            break;
+
+                            default: panic("unexpected opcode");
+                        }
+                        break;
+
+                        default:
+                        switch (opcode) {
+                            case WasmOp_global_get:
+                            opcodes[pc->opcode] = Op_global_get_32;
+                            break;
+
+                            case WasmOp_global_set:
+                            opcodes[pc->opcode] = Op_global_set_32;
+                            break;
+
+                            default: panic("unexpected opcode");
+                        }
+                        break;
+                    }
+                    pc->opcode += 1;
+                    if (global_idx != 0) {
+                        operands[pc->operand] = global_idx;
+                        pc->operand += 1;
+                    }
+                }
             }
             break;
 
-            case Op_i32_load:
-            case Op_i64_load:
-            case Op_f32_load:
-            case Op_f64_load:
-            case Op_i32_load8_s:
-            case Op_i32_load8_u:
-            case Op_i32_load16_s:
-            case Op_i32_load16_u:
-            case Op_i64_load8_s:
-            case Op_i64_load8_u:
-            case Op_i64_load16_s:
-            case Op_i64_load16_u:
-            case Op_i64_load32_s:
-            case Op_i64_load32_u:
-            case Op_i32_store:
-            case Op_i64_store:
-            case Op_f32_store:
-            case Op_f64_store:
-            case Op_i32_store8:
-            case Op_i32_store16:
-            case Op_i64_store8:
-            case Op_i64_store16:
-            case Op_i64_store32:
+            case WasmOp_i32_load:
+            case WasmOp_i64_load:
+            case WasmOp_f32_load:
+            case WasmOp_f64_load:
+            case WasmOp_i32_load8_s:
+            case WasmOp_i32_load8_u:
+            case WasmOp_i32_load16_s:
+            case WasmOp_i32_load16_u:
+            case WasmOp_i64_load8_s:
+            case WasmOp_i64_load8_u:
+            case WasmOp_i64_load16_s:
+            case WasmOp_i64_load16_u:
+            case WasmOp_i64_load32_s:
+            case WasmOp_i64_load32_u:
+            case WasmOp_i32_store:
+            case WasmOp_i64_store:
+            case WasmOp_f32_store:
+            case WasmOp_f64_store:
+            case WasmOp_i32_store8:
+            case WasmOp_i32_store16:
+            case WasmOp_i64_store8:
+            case WasmOp_i64_store16:
+            case WasmOp_i64_store32:
             {
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                read32_uleb128(mod_ptr, code_i);
-                operands[pc->operand] = read32_uleb128(mod_ptr, code_i);
-                offset_counts[operands[pc->operand] != 0] += 1;
-                max_offset = (operands[pc->operand] > max_offset) ?
-                    operands[pc->operand] : max_offset;
-                pc->operand += 1;
+                uint32_t alignment = read32_uleb128(mod_ptr, code_i);
+                uint32_t offset = read32_uleb128(mod_ptr, code_i);
+                (void)alignment;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm;
+                    opcodes[pc->opcode + 1] = opcode;
+                    pc->opcode += 2;
+                    operands[pc->operand] = offset;
+                    pc->operand += 1;
+                }
             }
             break;
 
-            case Op_memory_size:
-            case Op_memory_grow:
+            case WasmOp_memory_size:
+            case WasmOp_memory_grow:
             {
-                assert(mod_ptr[*code_i] == 0);
+                if (mod_ptr[*code_i] != 0) panic("unexpected memory index");
                 *code_i += 1;
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm;
+                    opcodes[pc->opcode + 1] = opcode;
+                    pc->opcode += 2;
+                }
             }
             break;
 
-            case Op_i32_const:
+            case WasmOp_i32_const:
             {
                 uint32_t x = read32_ileb128(mod_ptr, code_i);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = x;
-                pc->operand += 1;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm;
+                    opcodes[pc->opcode + 1] = opcode;
+                    pc->opcode += 2;
+                    operands[pc->operand] = x;
+                    pc->operand += 1;
+                }
             }
             break;
 
-            case Op_i64_const:
+            case WasmOp_i64_const:
             {
                 uint64_t x = read64_ileb128(mod_ptr, code_i);
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = x & UINT32_MAX;
-                operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
-                pc->operand += 2;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm;
+                    opcodes[pc->opcode + 1] = opcode;
+                    pc->opcode += 2;
+                    operands[pc->operand + 0] = x & UINT32_MAX;
+                    operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
+                    pc->operand += 2;
+                }
             }
             break;
 
-            case Op_f32_const:
+            case WasmOp_f32_const:
             {
                 uint32_t x;
                 memcpy(&x, mod_ptr + *code_i, 4);
                 *code_i += 4;
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = x;
-                pc->operand += 1;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm;
+                    opcodes[pc->opcode + 1] = opcode;
+                    pc->opcode += 2;
+                    operands[pc->operand] = x;
+                    pc->operand += 1;
+                }
             }
             break;
 
-            case Op_f64_const:
+            case WasmOp_f64_const:
             {
                 uint64_t x;
                 memcpy(&x, mod_ptr + *code_i, 8);
                 *code_i += 8;
-                opcodes[pc->opcode] = opcode;
-                pc->opcode += 1;
-                operands[pc->operand] = x & UINT32_MAX;
-                operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
-                pc->operand += 2;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm;
+                    opcodes[pc->opcode + 1] = opcode;
+                    pc->opcode += 2;
+                    operands[pc->operand + 0] = x & UINT32_MAX;
+                    operands[pc->operand + 1] = (x >> 32) & UINT32_MAX;
+                    pc->operand += 2;
+                }
             }
             break;
 
-            case Op_prefixed:
+            case WasmOp_select:
+            case WasmOp_drop:
+            if (unreachable_depth == 0) {
+                switch ((int)bs_isSet(stack_types, stack_depth)) {
+                    case false:
+                    switch (opcode) {
+                        case WasmOp_select:
+                        opcodes[pc->opcode] = Op_select_32;
+                        break;
+
+                        case WasmOp_drop:
+                        opcodes[pc->opcode] = Op_drop_32;
+                        break;
+
+                        default: panic("unexpected opcode");
+                    }
+                    break;
+
+                    case true:
+                    switch (opcode) {
+                        case WasmOp_select:
+                        opcodes[pc->opcode] = Op_select_64;
+                        break;
+
+                        case WasmOp_drop:
+                        opcodes[pc->opcode] = Op_drop_64;
+                        break;
+
+                        default: panic("unexpected opcode");
+                    }
+                    break;
+                }
+                pc->opcode += 1;
+            }
+            break;
+
+            default:
+            opcodes[pc->opcode + 0] = Op_wasm;
+            opcodes[pc->opcode + 1] = opcode;
+            pc->opcode += 2;
+            break;
+
+            case WasmOp_prefixed:
             switch (prefixed_opcode) {
-                case PrefixedOp_i32_trunc_sat_f32_s:
-                case PrefixedOp_i32_trunc_sat_f32_u:
-                case PrefixedOp_i32_trunc_sat_f64_s:
-                case PrefixedOp_i32_trunc_sat_f64_u:
-                case PrefixedOp_i64_trunc_sat_f32_s:
-                case PrefixedOp_i64_trunc_sat_f32_u:
-                case PrefixedOp_i64_trunc_sat_f64_s:
-                case PrefixedOp_i64_trunc_sat_f64_u:
-                opcodes[pc->opcode] = opcode;
-                opcodes[pc->opcode + 1] = prefixed_opcode;
-                pc->opcode += 2;
+                case WasmPrefixedOp_i32_trunc_sat_f32_s:
+                case WasmPrefixedOp_i32_trunc_sat_f32_u:
+                case WasmPrefixedOp_i32_trunc_sat_f64_s:
+                case WasmPrefixedOp_i32_trunc_sat_f64_u:
+                case WasmPrefixedOp_i64_trunc_sat_f32_s:
+                case WasmPrefixedOp_i64_trunc_sat_f32_u:
+                case WasmPrefixedOp_i64_trunc_sat_f64_s:
+                case WasmPrefixedOp_i64_trunc_sat_f64_u:
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm_prefixed;
+                    opcodes[pc->opcode + 1] = prefixed_opcode;
+                    pc->opcode += 2;
+                }
                 break;
 
-                case PrefixedOp_memory_copy:
-                assert(mod_ptr[*code_i] == 0 && mod_ptr[*code_i + 1] == 0);
+                case WasmPrefixedOp_memory_copy:
+                if (mod_ptr[*code_i + 0] != 0 || mod_ptr[*code_i + 1] != 0)
+                    panic("unexpected memory index");
                 *code_i += 2;
-                opcodes[pc->opcode] = opcode;
-                opcodes[pc->opcode + 1] = prefixed_opcode;
-                pc->opcode += 2;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm_prefixed;
+                    opcodes[pc->opcode + 1] = prefixed_opcode;
+                    pc->opcode += 2;
+                }
                 break;
 
-                case PrefixedOp_memory_fill:
-                assert(mod_ptr[*code_i] == 0);
+                case WasmPrefixedOp_memory_fill:
+                if (mod_ptr[*code_i] != 0) panic("unexpected memory index");
                 *code_i += 1;
-                opcodes[pc->opcode] = opcode;
-                opcodes[pc->opcode + 1] = prefixed_opcode;
-                pc->opcode += 2;
+                if (unreachable_depth == 0) {
+                    opcodes[pc->opcode + 0] = Op_wasm_prefixed;
+                    opcodes[pc->opcode + 1] = prefixed_opcode;
+                    pc->opcode += 2;
+                }
                 break;
 
                 default: panic("unreachable");
             }
             break;
-
-            default:
-            opcodes[pc->opcode] = opcode;
-            pc->opcode += 1;
-            break;
         }
 
         switch (opcode) {
-            case Op_unreachable:
-            case Op_return:
-            case Op_br:
-            case Op_br_table:
-            stack_depth = UINT32_MAX / 2;
+            case WasmOp_unreachable:
+            case WasmOp_return:
+            case WasmOp_br:
+            case WasmOp_br_table:
+            if (unreachable_depth == 0) unreachable_depth = 1;
             break;
 
             default:
@@ -1039,13 +1628,13 @@ static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
     struct Function *func = &vm->functions[fn_idx];
 
     // Push zeroed locals to stack
-    memset(vm->stack + vm->stack_top, 0, func->locals_count * sizeof(uint64_t));
+    memset(&vm->stack[vm->stack_top], 0, func->locals_count * sizeof(uint64_t));
     vm->stack_top += func->locals_count;
 
     vm_push_u32(vm, vm->pc.opcode);
     vm_push_u32(vm, vm->pc.operand);
 
-    vm->pc = func->pc;
+    vm->pc = func->entry_pc;
 }
 
 static void vm_run(struct VirtualMachine *vm) {
@@ -1106,13 +1695,27 @@ int main(int argc, char **argv) {
             struct TypeInfo *info = &types[type_i];
             if (mod.ptr[i] != 0x60) panic("bad type byte");
             i += 1;
+
             info->param_count = read32_uleb128(mod.ptr, &i);
+            info->param_types = 0;
             for (uint32_t param_i = 0; param_i < info->param_count; param_i += 1) {
-                read32_ileb128(mod.ptr, &i);
+                int64_t param_type = read64_ileb128(mod.ptr, &i);
+                switch (param_type) {
+                    case -1: case -3: bs_unset(&info->param_types, param_i); break;
+                    case -2: case -4:   bs_set(&info->param_types, param_i); break;
+                    default: panic("unexpected param type");
+                }
             }
+
             info->result_count = read32_uleb128(mod.ptr, &i);
+            info->result_types = 0;
             for (uint32_t result_i = 0; result_i < info->result_count; result_i += 1) {
-                read32_ileb128(mod.ptr, &i);
+                int64_t result_type = read64_ileb128(mod.ptr, &i);
+                switch (result_type) {
+                    case -1: case -3: bs_unset(&info->result_types, result_i); break;
+                    case -2: case -4:   bs_set(&info->result_types, result_i); break;
+                    default: panic("unexpected result type");
+                }
             }
         }
     }
@@ -1126,11 +1729,100 @@ int main(int argc, char **argv) {
         imports = arena_alloc(sizeof(struct Import) * imports_len);
         for (size_t imp_i = 0; imp_i < imports_len; imp_i += 1) {
             struct Import *imp = &imports[imp_i];
-            imp->mod_name = read_name(mod.ptr, &i);
-            imp->sym_name = read_name(mod.ptr, &i);
+
+            struct ByteSlice mod_name = read_name(mod.ptr, &i);
+            if (mod_name.len == strlen("wasi_snapshot_preview1") &&
+                memcmp(mod_name.ptr, "wasi_snapshot_preview1", mod_name.len) == 0) {
+                imp->mod = ImpMod_wasi_snapshot_preview1;
+            } else panic("unknown import module");
+
+            struct ByteSlice sym_name = read_name(mod.ptr, &i);
+            if (sym_name.len == strlen("args_get") &&
+                memcmp(sym_name.ptr, "args_get", sym_name.len) == 0) {
+                imp->name = ImpName_args_get;
+            } else if (sym_name.len == strlen("args_sizes_get") &&
+                memcmp(sym_name.ptr, "args_sizes_get", sym_name.len) == 0) {
+                imp->name = ImpName_args_sizes_get;
+            } else if (sym_name.len == strlen("clock_time_get") &&
+                memcmp(sym_name.ptr, "clock_time_get", sym_name.len) == 0) {
+                imp->name = ImpName_clock_time_get;
+            } else if (sym_name.len == strlen("debug") &&
+                memcmp(sym_name.ptr, "debug", sym_name.len) == 0) {
+                imp->name = ImpName_debug;
+            } else if (sym_name.len == strlen("debug_slice") &&
+                memcmp(sym_name.ptr, "debug_slice", sym_name.len) == 0) {
+                imp->name = ImpName_debug_slice;
+            } else if (sym_name.len == strlen("environ_get") &&
+                memcmp(sym_name.ptr, "environ_get", sym_name.len) == 0) {
+                imp->name = ImpName_environ_get;
+            } else if (sym_name.len == strlen("environ_sizes_get") &&
+                memcmp(sym_name.ptr, "environ_sizes_get", sym_name.len) == 0) {
+                imp->name = ImpName_environ_sizes_get;
+            } else if (sym_name.len == strlen("fd_close") &&
+                memcmp(sym_name.ptr, "fd_close", sym_name.len) == 0) {
+                imp->name = ImpName_fd_close;
+            } else if (sym_name.len == strlen("fd_fdstat_get") &&
+                memcmp(sym_name.ptr, "fd_fdstat_get", sym_name.len) == 0) {
+                imp->name = ImpName_fd_fdstat_get;
+            } else if (sym_name.len == strlen("fd_filestat_get") &&
+                memcmp(sym_name.ptr, "fd_filestat_get", sym_name.len) == 0) {
+                imp->name = ImpName_fd_filestat_get;
+            } else if (sym_name.len == strlen("fd_filestat_set_size") &&
+                memcmp(sym_name.ptr, "fd_filestat_set_size", sym_name.len) == 0) {
+                imp->name = ImpName_fd_filestat_set_size;
+            } else if (sym_name.len == strlen("fd_filestat_set_times") &&
+                memcmp(sym_name.ptr, "fd_filestat_set_times", sym_name.len) == 0) {
+                imp->name = ImpName_fd_filestat_set_times;
+            } else if (sym_name.len == strlen("fd_pread") &&
+                memcmp(sym_name.ptr, "fd_pread", sym_name.len) == 0) {
+                imp->name = ImpName_fd_pread;
+            } else if (sym_name.len == strlen("fd_prestat_dir_name") &&
+                memcmp(sym_name.ptr, "fd_prestat_dir_name", sym_name.len) == 0) {
+                imp->name = ImpName_fd_prestat_dir_name;
+            } else if (sym_name.len == strlen("fd_prestat_get") &&
+                memcmp(sym_name.ptr, "fd_prestat_get", sym_name.len) == 0) {
+                imp->name = ImpName_fd_prestat_get;
+            } else if (sym_name.len == strlen("fd_pwrite") &&
+                memcmp(sym_name.ptr, "fd_pwrite", sym_name.len) == 0) {
+                imp->name = ImpName_fd_pwrite;
+            } else if (sym_name.len == strlen("fd_read") &&
+                memcmp(sym_name.ptr, "fd_read", sym_name.len) == 0) {
+                imp->name = ImpName_fd_read;
+            } else if (sym_name.len == strlen("fd_readdir") &&
+                memcmp(sym_name.ptr, "fd_readdir", sym_name.len) == 0) {
+                imp->name = ImpName_fd_readdir;
+            } else if (sym_name.len == strlen("fd_write") &&
+                memcmp(sym_name.ptr, "fd_write", sym_name.len) == 0) {
+                imp->name = ImpName_fd_write;
+            } else if (sym_name.len == strlen("path_create_directory") &&
+                memcmp(sym_name.ptr, "path_create_directory", sym_name.len) == 0) {
+                imp->name = ImpName_path_create_directory;
+            } else if (sym_name.len == strlen("path_filestat_get") &&
+                memcmp(sym_name.ptr, "path_filestat_get", sym_name.len) == 0) {
+                imp->name = ImpName_path_filestat_get;
+            } else if (sym_name.len == strlen("path_open") &&
+                memcmp(sym_name.ptr, "path_open", sym_name.len) == 0) {
+                imp->name = ImpName_path_open;
+            } else if (sym_name.len == strlen("path_remove_directory") &&
+                memcmp(sym_name.ptr, "path_remove_directory", sym_name.len) == 0) {
+                imp->name = ImpName_path_remove_directory;
+            } else if (sym_name.len == strlen("path_rename") &&
+                memcmp(sym_name.ptr, "path_rename", sym_name.len) == 0) {
+                imp->name = ImpName_path_rename;
+            } else if (sym_name.len == strlen("path_unlink_file") &&
+                memcmp(sym_name.ptr, "path_unlink_file", sym_name.len) == 0) {
+                imp->name = ImpName_path_unlink_file;
+            } else if (sym_name.len == strlen("proc_exit") &&
+                memcmp(sym_name.ptr, "proc_exit", sym_name.len) == 0) {
+                imp->name = ImpName_proc_exit;
+            } else if (sym_name.len == strlen("random_get") &&
+                memcmp(sym_name.ptr, "random_get", sym_name.len) == 0) {
+                imp->name = ImpName_random_get;
+            } else panic("unknown import name");
+
             uint32_t desc = read32_uleb128(mod.ptr, &i);
             if (desc != 0) panic("external kind not function");
-            imp->type_info = types[read32_uleb128(mod.ptr, &i)];
+            imp->type_idx = read32_uleb128(mod.ptr, &i);
         }
     }
 
@@ -1161,7 +1853,7 @@ int main(int argc, char **argv) {
         functions = arena_alloc(sizeof(struct Function) * functions_len);
         for (size_t func_i = 0; func_i < functions_len; func_i += 1) {
             struct Function *func = &functions[func_i];
-            func->type_info = types[read32_uleb128(mod.ptr, &i)];
+            func->type_idx = read32_uleb128(mod.ptr, &i);
         }
     }
 
@@ -1179,7 +1871,7 @@ int main(int argc, char **argv) {
             if (content_type != 0x7f) panic("unexpected content type");
             uint8_t opcode = mod.ptr[i];
             i += 1;
-            if (opcode != Op_i32_const) panic("expected i32_const op");
+            if (opcode != WasmOp_i32_const) panic("expected i32_const op");
             uint32_t init = read32_ileb128(mod.ptr, &i);
             *global = (uint32_t)init;
         }
@@ -1199,12 +1891,12 @@ int main(int argc, char **argv) {
         for (; datas_count > 0; datas_count -= 1) {
             uint32_t mode = read32_uleb128(mod.ptr, &i);
             if (mode != 0) panic("expected mode 0");
-            enum Op opcode = mod.ptr[i];
+            enum WasmOp opcode = mod.ptr[i];
             i += 1;
-            if (opcode != Op_i32_const) panic("expected opcode i32_const");
+            if (opcode != WasmOp_i32_const) panic("expected opcode i32_const");
             uint32_t offset = read32_uleb128(mod.ptr, &i);
-            enum Op end = mod.ptr[i];
-            if (end != Op_end) panic("expected end opcode");
+            enum WasmOp end = mod.ptr[i];
+            if (end != WasmOp_end) panic("expected end opcode");
             i += 1;
             uint32_t bytes_len = read32_uleb128(mod.ptr, &i);
             memcpy(memory + offset, mod.ptr + i, bytes_len);
@@ -1229,12 +1921,12 @@ int main(int argc, char **argv) {
             uint32_t element_section_count = read32_uleb128(mod.ptr, &i);
             if (element_section_count != 1) panic("expected one element section");
             uint32_t flags = read32_uleb128(mod.ptr, &i);
-            enum Op opcode = mod.ptr[i];
+            enum WasmOp opcode = mod.ptr[i];
             i += 1;
-            if (opcode != Op_i32_const) panic("expected op i32_const");
+            if (opcode != WasmOp_i32_const) panic("expected op i32_const");
             uint32_t offset = read32_uleb128(mod.ptr, &i);
-            enum Op end = mod.ptr[i];
-            if (end != Op_end) panic("expected op end");
+            enum WasmOp end = mod.ptr[i];
+            if (end != WasmOp_end) panic("expected op end");
             i += 1;
             uint32_t elem_count = read32_uleb128(mod.ptr, &i);
 
@@ -1275,15 +1967,29 @@ int main(int argc, char **argv) {
             uint32_t size = read32_uleb128(mod.ptr, &code_i);
             uint32_t code_begin = code_i;
 
+            struct TypeInfo *type_info = &vm.types[func->type_idx];
             func->locals_count = 0;
-            uint32_t local_sets_count = read32_uleb128(mod.ptr, &code_i);
-            for (; local_sets_count > 0; local_sets_count -= 1) {
-                uint32_t current_count = read32_uleb128(mod.ptr, &code_i);
-                uint32_t local_type = read32_uleb128(mod.ptr, &code_i);
-                func->locals_count += current_count;
+            func->local_types = arena_alloc(sizeof(uint32_t) * ((type_info->param_count + func->locals_count + 31) / 32));
+            func->local_types[0] = type_info->param_types;
+
+            for (uint32_t local_sets_count = read32_uleb128(mod.ptr, &code_i);
+                 local_sets_count > 0; local_sets_count -= 1) {
+                uint32_t set_count = read32_uleb128(mod.ptr, &code_i);
+                int64_t local_type = read64_ileb128(mod.ptr, &code_i);
+
+                uint32_t i = type_info->param_count + func->locals_count;
+                func->local_types += set_count;
+                if ((type_info->param_count + func->locals_count + 31) / 32 > (i + 31) / 32)
+                    func->local_types = arena_realloc(func->local_types, sizeof(uint32_t) * ((type_info->param_count + func->locals_count + 31) / 32));
+                for (; i < type_info->param_count + func->locals_count; i += 1)
+                    switch (local_type) {
+                        case -1: case -3: bs_unset(func->local_types, i); break;
+                        case -2: case -4:   bs_set(func->local_types, i); break;
+                        default: panic("unexpected local type");
+                    }
             }
 
-            func->pc = pc;
+            func->entry_pc = pc;
             vm_decodeCode(&vm, func, &code_i, &pc);
             if (code_i != code_begin + size) panic("bad code size");
         }
@@ -1297,7 +2003,7 @@ int main(int argc, char **argv) {
             uint8_t opcode = vm.opcodes[opcode_i];
             if (!is_prefixed) {
                 opcode_counts[opcode] += 1;
-                is_prefixed = opcode == Op_prefixed;
+                is_prefixed = opcode == WasmOp_prefixed;
             } else {
                 prefixed_opcode_counts[opcode] += 1;
                 is_prefixed = false;
@@ -1310,5 +2016,3 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
-
