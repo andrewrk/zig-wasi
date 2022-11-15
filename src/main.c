@@ -136,6 +136,8 @@ static uint64_t rotr64(uint64_t n, unsigned c) {
 static void *arena_alloc(size_t n) {
     void *ptr = malloc(n);
     if (!ptr) panic("out of memory");
+    // TODO this is debugging only
+    memset(ptr, 0xaa, n);
     return ptr;
 }
 
@@ -678,16 +680,81 @@ static int to_host_fd(int32_t wasi_fd) {
 
 static enum wasi_errno_t to_wasi_err(int err) {
     switch (err) {
+        case E2BIG: return WASI_E2BIG;
         case EACCES: return WASI_EACCES;
-        case EDQUOT: return WASI_EDQUOT;
-        case EIO: return WASI_EIO;
-        case EFBIG: return WASI_EFBIG;
-        case ENOSPC: return WASI_ENOSPC;
-        case EPIPE: return WASI_EPIPE;
+        case EADDRINUSE: return WASI_EADDRINUSE;
+        case EADDRNOTAVAIL: return WASI_EADDRNOTAVAIL;
+        case EAFNOSUPPORT: return WASI_EAFNOSUPPORT;
+        case EAGAIN: return WASI_EAGAIN;
+        case EALREADY: return WASI_EALREADY;
         case EBADF: return WASI_EBADF;
-        case ENOMEM: return WASI_ENOMEM;
-        case ENOENT: return WASI_ENOENT;
+        case EBADMSG: return WASI_EBADMSG;
+        case EBUSY: return WASI_EBUSY;
+        case ECANCELED: return WASI_ECANCELED;
+        case ECHILD: return WASI_ECHILD;
+        case ECONNABORTED: return WASI_ECONNABORTED;
+        case ECONNREFUSED: return WASI_ECONNREFUSED;
+        case ECONNRESET: return WASI_ECONNRESET;
+        case EDEADLK: return WASI_EDEADLK;
+        case EDESTADDRREQ: return WASI_EDESTADDRREQ;
+        case EDOM: return WASI_EDOM;
+        case EDQUOT: return WASI_EDQUOT;
         case EEXIST: return WASI_EEXIST;
+        case EFAULT: return WASI_EFAULT;
+        case EFBIG: return WASI_EFBIG;
+        case EHOSTUNREACH: return WASI_EHOSTUNREACH;
+        case EIDRM: return WASI_EIDRM;
+        case EILSEQ: return WASI_EILSEQ;
+        case EINPROGRESS: return WASI_EINPROGRESS;
+        case EINTR: return WASI_EINTR;
+        case EINVAL: return WASI_EINVAL;
+        case EIO: return WASI_EIO;
+        case EISCONN: return WASI_EISCONN;
+        case EISDIR: return WASI_EISDIR;
+        case ELOOP: return WASI_ELOOP;
+        case EMFILE: return WASI_EMFILE;
+        case EMLINK: return WASI_EMLINK;
+        case EMSGSIZE: return WASI_EMSGSIZE;
+        case EMULTIHOP: return WASI_EMULTIHOP;
+        case ENAMETOOLONG: return WASI_ENAMETOOLONG;
+        case ENETDOWN: return WASI_ENETDOWN;
+        case ENETRESET: return WASI_ENETRESET;
+        case ENETUNREACH: return WASI_ENETUNREACH;
+        case ENFILE: return WASI_ENFILE;
+        case ENOBUFS: return WASI_ENOBUFS;
+        case ENODEV: return WASI_ENODEV;
+        case ENOENT: return WASI_ENOENT;
+        case ENOEXEC: return WASI_ENOEXEC;
+        case ENOLCK: return WASI_ENOLCK;
+        case ENOLINK: return WASI_ENOLINK;
+        case ENOMEM: return WASI_ENOMEM;
+        case ENOMSG: return WASI_ENOMSG;
+        case ENOPROTOOPT: return WASI_ENOPROTOOPT;
+        case ENOSPC: return WASI_ENOSPC;
+        case ENOSYS: return WASI_ENOSYS;
+        case ENOTCONN: return WASI_ENOTCONN;
+        case ENOTDIR: return WASI_ENOTDIR;
+        case ENOTEMPTY: return WASI_ENOTEMPTY;
+        case ENOTRECOVERABLE: return WASI_ENOTRECOVERABLE;
+        case ENOTSOCK: return WASI_ENOTSOCK;
+        case EOPNOTSUPP: return WASI_EOPNOTSUPP;
+        case ENOTTY: return WASI_ENOTTY;
+        case ENXIO: return WASI_ENXIO;
+        case EOVERFLOW: return WASI_EOVERFLOW;
+        case EOWNERDEAD: return WASI_EOWNERDEAD;
+        case EPERM: return WASI_EPERM;
+        case EPIPE: return WASI_EPIPE;
+        case EPROTO: return WASI_EPROTO;
+        case EPROTONOSUPPORT: return WASI_EPROTONOSUPPORT;
+        case EPROTOTYPE: return WASI_EPROTOTYPE;
+        case ERANGE: return WASI_ERANGE;
+        case EROFS: return WASI_EROFS;
+        case ESPIPE: return WASI_ESPIPE;
+        case ESRCH: return WASI_ESRCH;
+        case ESTALE: return WASI_ESTALE;
+        case ETIMEDOUT: return WASI_ETIMEDOUT;
+        case ETXTBSY: return WASI_ETXTBSY;
+        case EXDEV: return WASI_EXDEV;
         default:
         fprintf(stderr, "unexpected errno: %s\n", strerror(err));
         abort();
@@ -1132,7 +1199,7 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
         enum WasmPrefixedOp prefixed_opcode;
         if (opcode == WasmOp_prefixed) prefixed_opcode = read32_uleb128(mod_ptr, code_i);
 
-        //fprintf(stderr, "decodeCode opcode=0x%x pc=%u:%u\n", opcode, pc->opcode, pc->operand);
+        fprintf(stderr, "decodeCode opcode=0x%x pc=%u:%u\n", opcode, pc->opcode, pc->operand);
 
         uint32_t initial_stack_depth = stack_depth;
         if (unreachable_depth == 0) {
@@ -2490,9 +2557,9 @@ static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
     uint32_t fn_idx = fn_id - vm->imports_len;
     struct Function *func = &vm->functions[fn_idx];
 
-    //struct TypeInfo *type_info = &vm->types[func->type_idx];
-    //fprintf(stderr, "enter fn_id: %u, param_count: %u, result_count: %u, locals_count: %u\n",
-    //    fn_id, type_info->param_count, type_info->result_count, func->locals_count);
+    struct TypeInfo *type_info = &vm->types[func->type_idx];
+    fprintf(stderr, "enter fn_id: %u, param_count: %u, result_count: %u, locals_count: %u\n",
+        fn_id, type_info->param_count, type_info->result_count, func->locals_count);
 
     // Push zeroed locals to stack
     memset(vm->stack + vm->stack_top, 0, func->locals_count * sizeof(uint64_t));
@@ -2576,10 +2643,10 @@ static void vm_run(struct VirtualMachine *vm) {
     for (;;) {
         enum Op op = opcodes[pc->opcode];
         pc->opcode += 1;
-        //if (vm->stack_top > 0) {
-        //    fprintf(stderr, "stack[%u]=%lx pc=%u:%u, op=%u\n", 
-        //        vm->stack_top - 1, vm->stack[vm->stack_top - 1], pc->opcode, pc->operand, op);
-        //}
+        if (vm->stack_top > 0) {
+            fprintf(stderr, "stack[%u]=%lx pc=%u:%u, op=%u\n", 
+                vm->stack_top - 1, vm->stack[vm->stack_top - 1], pc->opcode, pc->operand, op);
+        }
         switch (op) {
             case Op_unreachable:
                 panic("unreachable reached");
@@ -2814,7 +2881,7 @@ static void vm_run(struct VirtualMachine *vm) {
             case Op_wasm:
                 {
                     enum WasmOp wasm_op = opcodes[pc->opcode];
-                    //fprintf(stderr, "op2=%x\n", wasm_op);
+                    fprintf(stderr, "op2=%x\n", wasm_op);
                     pc->opcode += 1;
                     switch (wasm_op) {
                         case WasmOp_unreachable:
@@ -3950,7 +4017,7 @@ int main(int argc, char **argv) {
     if (version != 1) panic("bad wasm version");
 
     uint32_t section_starts[13];
-    memset(&section_starts, 0, 4 * 13);
+    memset(&section_starts, 0, sizeof(uint32_t) * 13);
 
     while (i < mod.len) {
         uint8_t section_id = mod.ptr[i];
@@ -4211,7 +4278,7 @@ int main(int argc, char **argv) {
             uint32_t elem_count = read32_uleb128(mod.ptr, &i);
 
             table = arena_alloc(sizeof(uint32_t) * maximum);
-            memset(table, 0, maximum);
+            memset(table, 0, sizeof(uint32_t) * maximum);
 
             for (uint32_t elem_i = 0; elem_i < elem_count; elem_i += 1) {
                 table[elem_i + offset] = read32_uleb128(mod.ptr, &i);
@@ -4253,7 +4320,8 @@ int main(int argc, char **argv) {
             func->local_types[0] = type_info->param_types;
 
             for (uint32_t local_sets_count = read32_uleb128(mod.ptr, &code_i);
-                 local_sets_count > 0; local_sets_count -= 1) {
+                 local_sets_count > 0; local_sets_count -= 1)
+            {
                 uint32_t set_count = read32_uleb128(mod.ptr, &code_i);
                 int64_t local_type = read64_ileb128(mod.ptr, &code_i);
 
@@ -4269,26 +4337,10 @@ int main(int argc, char **argv) {
                     }
             }
 
-            //fprintf(stderr, "set up func %u with pc %u:%u\n", func->type_idx, pc.opcode, pc.operand);
+            fprintf(stderr, "set up func %u with pc %u:%u\n", func->type_idx, pc.opcode, pc.operand);
             func->entry_pc = pc;
             vm_decodeCode(&vm, func, &code_i, &pc);
             if (code_i != code_begin + size) panic("bad code size");
-        }
-
-        uint64_t opcode_counts[0x100];
-        memset(opcode_counts, 0, 0x100);
-        uint64_t prefixed_opcode_counts[0x100];
-        memset(prefixed_opcode_counts, 0, 0x100);
-        bool is_prefixed = false;
-        for (uint32_t opcode_i = 0; opcode_i < pc.opcode; opcode_i += 1) {
-            uint8_t opcode = vm.opcodes[opcode_i];
-            if (!is_prefixed) {
-                opcode_counts[opcode] += 1;
-                is_prefixed = opcode == WasmOp_prefixed;
-            } else {
-                prefixed_opcode_counts[opcode] += 1;
-                is_prefixed = false;
-            }
         }
     }
 
