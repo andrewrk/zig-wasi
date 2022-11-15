@@ -14,6 +14,86 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+enum wasi_errno_t {
+    WASI_ESUCCESS = 0,
+    WASI_E2BIG = 1,
+    WASI_EACCES = 2,
+    WASI_EADDRINUSE = 3,
+    WASI_EADDRNOTAVAIL = 4,
+    WASI_EAFNOSUPPORT = 5,
+    WASI_EAGAIN = 6,
+    WASI_EALREADY = 7,
+    WASI_EBADF = 8,
+    WASI_EBADMSG = 9,
+    WASI_EBUSY = 10,
+    WASI_ECANCELED = 11,
+    WASI_ECHILD = 12,
+    WASI_ECONNABORTED = 13,
+    WASI_ECONNREFUSED = 14,
+    WASI_ECONNRESET = 15,
+    WASI_EDEADLK = 16,
+    WASI_EDESTADDRREQ = 17,
+    WASI_EDOM = 18,
+    WASI_EDQUOT = 19,
+    WASI_EEXIST = 20,
+    WASI_EFAULT = 21,
+    WASI_EFBIG = 22,
+    WASI_EHOSTUNREACH = 23,
+    WASI_EIDRM = 24,
+    WASI_EILSEQ = 25,
+    WASI_EINPROGRESS = 26,
+    WASI_EINTR = 27,
+    WASI_EINVAL = 28,
+    WASI_EIO = 29,
+    WASI_EISCONN = 30,
+    WASI_EISDIR = 31,
+    WASI_ELOOP = 32,
+    WASI_EMFILE = 33,
+    WASI_EMLINK = 34,
+    WASI_EMSGSIZE = 35,
+    WASI_EMULTIHOP = 36,
+    WASI_ENAMETOOLONG = 37,
+    WASI_ENETDOWN = 38,
+    WASI_ENETRESET = 39,
+    WASI_ENETUNREACH = 40,
+    WASI_ENFILE = 41,
+    WASI_ENOBUFS = 42,
+    WASI_ENODEV = 43,
+    WASI_ENOENT = 44,
+    WASI_ENOEXEC = 45,
+    WASI_ENOLCK = 46,
+    WASI_ENOLINK = 47,
+    WASI_ENOMEM = 48,
+    WASI_ENOMSG = 49,
+    WASI_ENOPROTOOPT = 50,
+    WASI_ENOSPC = 51,
+    WASI_ENOSYS = 52,
+    WASI_ENOTCONN = 53,
+    WASI_ENOTDIR = 54,
+    WASI_ENOTEMPTY = 55,
+    WASI_ENOTRECOVERABLE = 56,
+    WASI_ENOTSOCK = 57,
+    WASI_EOPNOTSUPP = 58,
+    WASI_ENOTTY = 59,
+    WASI_ENXIO = 60,
+    WASI_EOVERFLOW = 61,
+    WASI_EOWNERDEAD = 62,
+    WASI_EPERM = 63,
+    WASI_EPIPE = 64,
+    WASI_EPROTO = 65,
+    WASI_EPROTONOSUPPORT = 66,
+    WASI_EPROTOTYPE = 67,
+    WASI_ERANGE = 68,
+    WASI_EROFS = 69,
+    WASI_ESPIPE = 70,
+    WASI_ESRCH = 71,
+    WASI_ESTALE = 72,
+    WASI_ETIMEDOUT = 73,
+    WASI_ETXTBSY = 74,
+    WASI_EXDEV = 75,
+    WASI_ENOTCAPABLE = 76,
+};
+
 static void panic(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     abort();
@@ -578,6 +658,319 @@ struct VirtualMachine {
     char **args;
     uint32_t *table;
 };
+
+/// fn args_sizes_get(argc: *usize, argv_buf_size: *usize) errno_t;
+static enum wasi_errno_t wasi_args_sizes_get(struct VirtualMachine *vm,
+    uint32_t argc, uint32_t argv_buf_size)
+{
+    panic("TODO implement wasi_args_sizes_get");
+    //mem.writeIntLittle(u32, vm.memory[argc..][0..4], @intCast(u32, vm.args.len));
+    //var buf_size: usize = 0;
+    //for (vm.args) |arg| {
+    //    buf_size += mem.span(arg).len + 1;
+    //}
+    //mem.writeIntLittle(u32, vm.memory[argv_buf_size..][0..4], @intCast(u32, buf_size));
+    return WASI_ESUCCESS;
+}
+
+/// extern fn args_get(argv: [*][*:0]u8, argv_buf: [*]u8) errno_t;
+static enum wasi_errno_t wasi_args_get(struct VirtualMachine *vm,
+    uint32_t argv, uint32_t argv_buf) 
+{
+    panic("TODO implement wasi_args_get");
+    //var argv_buf_i: usize = 0;
+    //for (vm.args) |arg, arg_i| {
+    //    // Write the arg to the buffer.
+    //    const argv_ptr = argv_buf + argv_buf_i;
+    //    const arg_len = mem.span(arg).len + 1;
+    //    mem.copy(u8, vm.memory[argv_buf + argv_buf_i ..], arg[0..arg_len]);
+    //    argv_buf_i += arg_len;
+
+    //    mem.writeIntLittle(u32, vm.memory[argv + 4 * arg_i ..][0..4], @intCast(u32, argv_ptr));
+    //}
+    return WASI_ESUCCESS;
+}
+
+/// extern fn random_get(buf: [*]u8, buf_len: usize) errno_t;
+static enum wasi_errno_t wasi_random_get(struct VirtualMachine *vm,
+    uint32_t buf, uint32_t buf_len) 
+{
+    panic("TODO implement wasi_random_get");
+    //const host_buf = vm.memory[buf..][0..buf_len];
+    //std.crypto.random.bytes(host_buf);
+    return WASI_ESUCCESS;
+}
+
+/// fn fd_prestat_get(fd: fd_t, buf: *prestat_t) errno_t;
+/// const prestat_t = extern struct {
+///     pr_type: u8,
+///     u: usize,
+/// };
+static enum wasi_errno_t wasi_fd_prestat_get(struct VirtualMachine *vm,
+    int32_t fd, uint32_t buf)
+{
+    panic("TODO implement wasi_fd_prestat_get");
+    //const preopen = findPreopen(fd) orelse return .BADF;
+    //mem.writeIntLittle(u32, vm.memory[buf + 0 ..][0..4], 0);
+    //mem.writeIntLittle(u32, vm.memory[buf + 4 ..][0..4], @intCast(u32, preopen.name.len));
+    return WASI_ESUCCESS;
+}
+
+/// fn fd_prestat_dir_name(fd: fd_t, path: [*]u8, path_len: usize) errno_t;
+static enum wasi_errno_t wasi_fd_prestat_dir_name(struct VirtualMachine *vm,
+        int32_t fd, uint32_t path, uint32_t path_len)
+{
+    panic("TODO implement wasi_fd_prestat_dir_name");
+    //const preopen = findPreopen(fd) orelse return .BADF;
+    //assert(path_len == preopen.name.len);
+    //mem.copy(u8, vm.memory[path..], preopen.name);
+    return WASI_ESUCCESS;
+}
+
+/// extern fn fd_close(fd: fd_t) errno_t;
+static enum wasi_errno_t wasi_fd_close(struct VirtualMachine *vm, int32_t fd) {
+    panic("TODO implement wasi_fd_close");
+    //_ = vm;
+    //const host_fd = toHostFd(fd);
+    //os.close(host_fd);
+    return WASI_ESUCCESS;
+}
+
+static enum wasi_errno_t wasi_fd_read(
+    struct VirtualMachine *vm,
+    int32_t fd,
+    uint32_t iovs, // [*]const iovec_t
+    uint32_t iovs_len, // usize
+    uint32_t nread // *usize
+) {
+    panic("TODO implement wasi_fd_read");
+    //const host_fd = toHostFd(fd);
+    //var i: u32 = 0;
+    //var total_read: usize = 0;
+    //while (i < iovs_len) : (i += 1) {
+    //    const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
+    //    const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
+    //    const buf = vm.memory[ptr..][0..len];
+    //    const read = os.read(host_fd, buf) catch |err| return toWasiError(err);
+    //    trace_log.debug("read {d} bytes out of {d}", .{ read, buf.len });
+    //    total_read += read;
+    //    if (read != buf.len) break;
+    //}
+    //mem.writeIntLittle(u32, vm.memory[nread..][0..4], @intCast(u32, total_read));
+    return WASI_ESUCCESS;
+}
+
+/// extern fn fd_write(fd: fd_t, iovs: [*]const ciovec_t, iovs_len: usize, nwritten: *usize) errno_t;
+/// const ciovec_t = extern struct {
+///     base: [*]const u8,
+///     len: usize,
+/// };
+static enum wasi_errno_t wasi_fd_write(struct VirtualMachine *vm, int32_t fd, uint32_t iovs, uint32_t iovs_len, uint32_t nwritten) {
+    panic("TODO implement wasi_fd_write");
+    //const host_fd = toHostFd(fd);
+    //var i: u32 = 0;
+    //var total_written: usize = 0;
+    //while (i < iovs_len) : (i += 1) {
+    //    const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
+    //    const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
+    //    const buf = vm.memory[ptr..][0..len];
+    //    const written = os.write(host_fd, buf) catch |err| return toWasiError(err);
+    //    total_written += written;
+    //    if (written != buf.len) break;
+    //}
+    //mem.writeIntLittle(u32, vm.memory[nwritten..][0..4], @intCast(u32, total_written));
+    return WASI_ESUCCESS;
+}
+
+static enum wasi_errno_t wasi_fd_pwrite(
+    struct VirtualMachine *vm,
+    int32_t fd,
+    uint32_t iovs, // [*]const ciovec_t
+    uint32_t iovs_len, // usize
+    uint64_t offset, // wasi.filesize_t,
+    uint32_t written_ptr // *usize
+) {
+    panic("TODO implement wasi_fd_pwrite");
+    //const host_fd = toHostFd(fd);
+    //var i: u32 = 0;
+    //var written: usize = 0;
+    //while (i < iovs_len) : (i += 1) {
+    //    const ptr = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 0 ..][0..4]);
+    //    const len = mem.readIntLittle(u32, vm.memory[iovs + i * 8 + 4 ..][0..4]);
+    //    const buf = vm.memory[ptr..][0..len];
+    //    const w = os.pwrite(host_fd, buf, offset + written) catch |err| return toWasiError(err);
+    //    written += w;
+    //    if (w != buf.len) break;
+    //}
+    //mem.writeIntLittle(u32, vm.memory[written_ptr..][0..4], @intCast(u32, written));
+    return WASI_ESUCCESS;
+}
+
+///extern fn path_open(
+///    dirfd: fd_t,
+///    dirflags: lookupflags_t,
+///    path: [*]const u8,
+///    path_len: usize,
+///    oflags: oflags_t,
+///    fs_rights_base: rights_t,
+///    fs_rights_inheriting: rights_t,
+///    fs_flags: fdflags_t,
+///    fd: *fd_t,
+///) errno_t;
+static enum wasi_errno_t wasi_path_open(
+    struct VirtualMachine *vm,
+    int32_t dirfd,
+    uint32_t dirflags, // wasi.lookupflags_t,
+    uint32_t path,
+    uint32_t path_len,
+    uint16_t oflags, // wasi.oflags_t,
+    uint64_t fs_rights_base, // wasi.rights_t,
+    uint64_t fs_rights_inheriting, // wasi.rights_t,
+    uint16_t fs_flags, // wasi.fdflags_t,
+    uint32_t fd
+) {
+    panic("TODO implement wasi_path_open");
+    //const sub_path = vm.memory[path..][0..path_len];
+    //const host_fd = toHostFd(dirfd);
+    //var flags: u32 = @as(u32, if (oflags & wasi.O.CREAT != 0) os.O.CREAT else 0) |
+    //    @as(u32, if (oflags & wasi.O.DIRECTORY != 0) os.O.DIRECTORY else 0) |
+    //    @as(u32, if (oflags & wasi.O.EXCL != 0) os.O.EXCL else 0) |
+    //    @as(u32, if (oflags & wasi.O.TRUNC != 0) os.O.TRUNC else 0) |
+    //    @as(u32, if (fs_flags & wasi.FDFLAG.APPEND != 0) os.O.APPEND else 0) |
+    //    @as(u32, if (fs_flags & wasi.FDFLAG.DSYNC != 0) os.O.DSYNC else 0) |
+    //    @as(u32, if (fs_flags & wasi.FDFLAG.NONBLOCK != 0) os.O.NONBLOCK else 0) |
+    //    @as(u32, if (fs_flags & wasi.FDFLAG.SYNC != 0) os.O.SYNC else 0);
+    //if ((fs_rights_base & wasi.RIGHT.FD_READ != 0) and
+    //    (fs_rights_base & wasi.RIGHT.FD_WRITE != 0))
+    //{
+    //    flags |= os.O.RDWR;
+    //} else if (fs_rights_base & wasi.RIGHT.FD_WRITE != 0) {
+    //    flags |= os.O.WRONLY;
+    //} else if (fs_rights_base & wasi.RIGHT.FD_READ != 0) {
+    //    flags |= os.O.RDONLY; // no-op because O_RDONLY is 0
+    //}
+    //const mode = 0o644;
+    //const res_fd = os.openat(host_fd, sub_path, flags, mode) catch |err| return toWasiError(err);
+    //mem.writeIntLittle(i32, vm.memory[fd..][0..4], res_fd);
+    return WASI_ESUCCESS;
+}
+
+static enum wasi_errno_t wasi_path_filestat_get(
+    struct VirtualMachine *vm,
+    int32_t fd,
+    uint32_t flags, // wasi.lookupflags_t,
+    uint32_t path, // [*]const u8
+    uint32_t path_len, // usize
+    uint32_t buf // *filestat_t
+) {
+    panic("TODO implement wasi_path_filestat_get");
+    //const sub_path = vm.memory[path..][0..path_len];
+    //const host_fd = toHostFd(fd);
+    //const dir: fs.Dir = .{ .fd = host_fd };
+    //const stat = dir.statFile(sub_path) catch |err| return toWasiError(err);
+    //return finishWasiStat(vm, buf, stat);
+    return WASI_ESUCCESS;
+}
+
+/// extern fn path_create_directory(fd: fd_t, path: [*]const u8, path_len: usize) errno_t;
+static enum wasi_errno_t wasi_path_create_directory(struct VirtualMachine *vm, int32_t fd, uint32_t path, uint32_t path_len) {
+    panic("TODO implement wasi_path_create_directory");
+    //const sub_path = vm.memory[path..][0..path_len];
+    //trace_log.debug("wasi_path_create_directory fd={d} path={s}", .{ fd, sub_path });
+    //const host_fd = toHostFd(fd);
+    //const dir: fs.Dir = .{ .fd = host_fd };
+    //dir.makeDir(sub_path) catch |err| return toWasiError(err);
+    return WASI_ESUCCESS;
+}
+
+static enum wasi_errno_t wasi_path_rename(
+    struct VirtualMachine *vm,
+    int32_t old_fd,
+    uint32_t old_path_ptr, // [*]const u8
+    uint32_t old_path_len, // usize
+    int32_t new_fd,
+    uint32_t new_path_ptr, // [*]const u8
+    uint32_t new_path_len // usize
+) {
+    panic("TODO implement wasi_path_rename");
+    //const old_path = vm.memory[old_path_ptr..][0..old_path_len];
+    //const new_path = vm.memory[new_path_ptr..][0..new_path_len];
+    //trace_log.debug("wasi_path_rename old_fd={d} old_path={s} new_fd={d} new_path={s}", .{
+    //    old_fd, old_path, new_fd, new_path,
+    //});
+    //const old_host_fd = toHostFd(old_fd);
+    //const new_host_fd = toHostFd(new_fd);
+    //os.renameat(old_host_fd, old_path, new_host_fd, new_path) catch |err| return toWasiError(err);
+    return WASI_ESUCCESS;
+}
+
+/// extern fn fd_filestat_get(fd: fd_t, buf: *filestat_t) errno_t;
+static enum wasi_errno_t wasi_fd_filestat_get(struct VirtualMachine *vm, int32_t fd, uint32_t buf) {
+    panic("TODO implement wasi_fd_filestat_get");
+    //const host_fd = toHostFd(fd);
+    //const file = fs.File{ .handle = host_fd };
+    //const stat = file.stat() catch |err| return toWasiError(err);
+    //return finishWasiStat(vm, buf, stat);
+    return WASI_ESUCCESS;
+}
+
+static enum wasi_errno_t wasi_fd_filestat_set_size( struct VirtualMachine *vm,
+        int32_t fd, uint64_t size)
+{
+    panic("TODO implement wasi_fd_filestat_set_size");
+    //_ = vm;
+    //const host_fd = toHostFd(fd);
+    //os.ftruncate(host_fd, size) catch |err| return toWasiError(err);
+    return WASI_ESUCCESS;
+}
+
+/// pub extern "wasi_snapshot_preview1" fn fd_fdstat_get(fd: fd_t, buf: *fdstat_t) errno_t;
+/// pub const fdstat_t = extern struct {
+///     fs_filetype: filetype_t, u8
+///     fs_flags: fdflags_t, u16
+///     fs_rights_base: rights_t, u64
+///     fs_rights_inheriting: rights_t, u64
+/// };
+static enum wasi_errno_t wasi_fd_fdstat_get(struct VirtualMachine *vm, int32_t fd, uint32_t buf) {
+    panic("TODO implement wasi_fd_fdstat_get");
+    //const host_fd = toHostFd(fd);
+    //const file = fs.File{ .handle = host_fd };
+    //const stat = file.stat() catch |err| return toWasiError(err);
+    //mem.writeIntLittle(u16, vm.memory[buf + 0x00 ..][0..2], @enumToInt(toWasiFileType(stat.kind)));
+    //mem.writeIntLittle(u16, vm.memory[buf + 0x02 ..][0..2], 0); // flags
+    //mem.writeIntLittle(u64, vm.memory[buf + 0x08 ..][0..8], math.maxInt(u64)); // rights_base
+    //mem.writeIntLittle(u64, vm.memory[buf + 0x10 ..][0..8], math.maxInt(u64)); // rights_inheriting
+    return WASI_ESUCCESS;
+}
+
+/// extern fn clock_time_get(clock_id: clockid_t, precision: timestamp_t, timestamp: *timestamp_t) errno_t;
+static enum wasi_errno_t wasi_clock_time_get(struct VirtualMachine *vm,
+        uint32_t clock_id, uint64_t precision, uint32_t timestamp)
+{
+    panic("TODO implement wasi_clock_time_get");
+    ////const host_clock_id = toHostClockId(clock_id);
+    //_ = precision;
+    //_ = clock_id;
+    //const wasi_ts = toWasiTimestamp(std.time.nanoTimestamp());
+    //mem.writeIntLittle(u64, vm.memory[timestamp..][0..8], wasi_ts);
+    return WASI_ESUCCESS;
+}
+
+///pub extern "wasi_snapshot_preview1" fn debug(string: [*:0]const u8, x: u64) void;
+void wasi_debug(struct VirtualMachine *vm, uint32_t text, uint64_t n) {
+    panic("TODO implement wasi_debug");
+    //const s = mem.sliceTo(vm.memory[text..], 0);
+    //trace_log.debug("wasi_debug: '{s}' number={d} {x}", .{ s, n, n });
+}
+
+/// pub extern "wasi_snapshot_preview1" fn debug_slice(ptr: [*]const u8, len: usize) void;
+void wasi_debug_slice(struct VirtualMachine *vm, uint32_t ptr, uint32_t len) {
+    panic("TODO implement wasi_debug_slice");
+    //const s = vm.memory[ptr..][0..len];
+    //trace_log.debug("wasi_debug_slice: '{s}'", .{s});
+}
+
+
 
 struct Label {
     enum WasmOp opcode;
@@ -1699,10 +2092,6 @@ static void vm_decodeCode(struct VirtualMachine *vm, struct Function *func, uint
     }
 }
 
-static void vm_callImport(struct VirtualMachine *vm, struct Import imp) {
-    panic("TODO implement callImport");
-}
-
 static void vm_push_u32(struct VirtualMachine *vm, uint32_t value) {
     vm->stack[vm->stack_top] = value;
     vm->stack_top += 1;
@@ -1763,6 +2152,230 @@ static double vm_pop_f64(struct VirtualMachine *vm) {
     double result;
     memcpy(&result, &integer, 8);
     return result;
+}
+
+static void vm_callImport(struct VirtualMachine *vm, struct Import import) {
+    switch (import.mod) {
+        case ImpMod_wasi_snapshot_preview1: switch (import.name) {
+            case ImpName_fd_prestat_get:
+            {
+                uint32_t buf = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_prestat_get(vm, fd, buf));
+            }
+            break;
+            case ImpName_fd_prestat_dir_name:
+            {
+                uint32_t path_len = vm_pop_u32(vm);
+                uint32_t path = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_prestat_dir_name(vm, fd, path, path_len));
+            }
+            break;
+            case ImpName_fd_close:
+            {
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_close(vm, fd));
+            }
+            break;
+            case ImpName_fd_read:
+            {
+                uint32_t nread = vm_pop_u32(vm);
+                uint32_t iovs_len = vm_pop_u32(vm);
+                uint32_t iovs = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_read(vm, fd, iovs, iovs_len, nread));
+            }
+            break;
+            case ImpName_fd_filestat_get:
+            {
+                uint32_t buf = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_filestat_get(vm, fd, buf));
+            }
+            break;
+            case ImpName_fd_filestat_set_size:
+            {
+                uint64_t size = vm_pop_u64(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_filestat_set_size(vm, fd, size));
+            }
+            break;
+            case ImpName_fd_filestat_set_times:
+            {
+                panic("unexpected call to fd_filestat_set_times");
+            }
+            break;
+            case ImpName_fd_fdstat_get:
+            {
+                uint32_t buf = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_fdstat_get(vm, fd, buf));
+            }
+            break;
+            case ImpName_fd_readdir:
+            {
+                panic("TODO implement fd_readdir");
+            }
+            break;
+            case ImpName_fd_write:
+            {
+                uint32_t nwritten = vm_pop_u32(vm);
+                uint32_t iovs_len = vm_pop_u32(vm);
+                uint32_t iovs = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_write(vm, fd, iovs, iovs_len, nwritten));
+            }
+            break;
+            case ImpName_fd_pwrite:
+            {
+                uint32_t nwritten = vm_pop_u32(vm);
+                uint64_t offset = vm_pop_u64(vm);
+                uint32_t iovs_len = vm_pop_u32(vm);
+                uint32_t iovs = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_fd_pwrite(vm, fd, iovs, iovs_len, offset, nwritten));
+            }
+            break;
+            case ImpName_proc_exit:
+            {
+                uint32_t code = vm_pop_u32(vm);
+                exit(code);
+            }
+            break;
+            case ImpName_args_sizes_get:
+            {
+                uint32_t argv_buf_size = vm_pop_u32(vm);
+                uint32_t argc = vm_pop_u32(vm);
+                vm_push_u32(vm, wasi_args_sizes_get(vm, argc, argv_buf_size));
+            }
+            break;
+            case ImpName_args_get:
+            {
+                uint32_t argv_buf = vm_pop_u32(vm);
+                uint32_t argv = vm_pop_u32(vm);
+                vm_push_u32(vm, wasi_args_get(vm, argv, argv_buf));
+            }
+            break;
+            case ImpName_random_get:
+            {
+                uint32_t buf_len = vm_pop_u32(vm);
+                uint32_t buf = vm_pop_u32(vm);
+                vm_push_u32(vm, wasi_random_get(vm, buf, buf_len));
+            }
+            break;
+            case ImpName_environ_sizes_get:
+            {
+                panic("unexpected call to environ_sizes_get");
+            }
+            break;
+            case ImpName_environ_get:
+            {
+                panic("unexpected call to environ_get");
+            }
+            break;
+            case ImpName_path_filestat_get:
+            {
+                uint32_t buf = vm_pop_u32(vm);
+                uint32_t path_len = vm_pop_u32(vm);
+                uint32_t path = vm_pop_u32(vm);
+                uint32_t flags = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_path_filestat_get(vm, fd, flags, path, path_len, buf));
+            }
+            break;
+            case ImpName_path_create_directory:
+            {
+                uint32_t path_len = vm_pop_u32(vm);
+                uint32_t path = vm_pop_u32(vm);
+                int32_t fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_path_create_directory(vm, fd, path, path_len));
+            }
+            break;
+            case ImpName_path_rename:
+            {
+                uint32_t new_path_len = vm_pop_u32(vm);
+                uint32_t new_path = vm_pop_u32(vm);
+                int32_t new_fd = vm_pop_i32(vm);
+                uint32_t old_path_len = vm_pop_u32(vm);
+                uint32_t old_path = vm_pop_u32(vm);
+                int32_t old_fd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_path_rename(
+                    vm,
+                    old_fd,
+                    old_path,
+                    old_path_len,
+                    new_fd,
+                    new_path,
+                    new_path_len
+                ));
+            }
+            break;
+            case ImpName_path_open:
+            {
+                uint32_t fd = vm_pop_u32(vm);
+                uint32_t fs_flags = vm_pop_u32(vm);
+                uint64_t fs_rights_inheriting = vm_pop_u64(vm);
+                uint64_t fs_rights_base = vm_pop_u64(vm);
+                uint32_t oflags = vm_pop_u32(vm);
+                uint32_t path_len = vm_pop_u32(vm);
+                uint32_t path = vm_pop_u32(vm);
+                uint32_t dirflags = vm_pop_u32(vm);
+                int32_t dirfd = vm_pop_i32(vm);
+                vm_push_u32(vm, wasi_path_open(
+                    vm,
+                    dirfd,
+                    dirflags,
+                    path,
+                    path_len,
+                    oflags,
+                    fs_rights_base,
+                    fs_rights_inheriting,
+                    fs_flags,
+                    fd
+                ));
+            }
+            break;
+            case ImpName_path_remove_directory:
+            {
+                panic("unexpected call to path_remove_directory");
+            }
+            break;
+            case ImpName_path_unlink_file:
+            {
+                panic("unexpected call to path_unlink_file");
+            }
+            break;
+            case ImpName_clock_time_get:
+            {
+                uint32_t timestamp = vm_pop_u32(vm);
+                uint64_t precision = vm_pop_u64(vm);
+                uint32_t clock_id = vm_pop_u32(vm);
+                vm_push_u32(vm, wasi_clock_time_get(vm, clock_id, precision, timestamp));
+            }
+            break;
+            case ImpName_fd_pread:
+            {
+                panic("unexpected call to fd_pread");
+            }
+            break;
+            case ImpName_debug:
+            {
+                uint64_t number = vm_pop_u64(vm);
+                uint32_t text = vm_pop_u32(vm);
+                wasi_debug(vm, text, number);
+            }
+            break;
+            case ImpName_debug_slice:
+            {
+                uint32_t len = vm_pop_u32(vm);
+                uint32_t ptr = vm_pop_u32(vm);
+                wasi_debug_slice(vm, ptr, len);
+            }
+            break;
+        }
+        break;
+    }
 }
 
 static void vm_call(struct VirtualMachine *vm, uint32_t fn_id) {
