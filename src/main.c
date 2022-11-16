@@ -4005,19 +4005,102 @@ static void vm_run(struct VirtualMachine *vm) {
     }
 }
 
+static size_t common_prefix(const char *a, const char *b) {
+    size_t i = 0;
+    for (; a[i] == b[i]; i += 1) {}
+    return i;
+}
+
 int main(int argc, char **argv) {
     char *memory = mmap( NULL, max_memory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 
     const char *zig_lib_dir_path = argv[1];
-    const char *zig_cache_dir_path = argv[2];
-    const size_t vm_argv_start = 3;
-    const char *wasm_file = argv[vm_argv_start];
+    const char *cmake_binary_dir_path = argv[2];
+    size_t argv_i = 3;
+    const char *wasm_file = argv[argv_i];
+
+    size_t cwd_path_len = common_prefix(zig_lib_dir_path, cmake_binary_dir_path);
+    const char *rel_cmake_bin_path = cmake_binary_dir_path + cwd_path_len;
+
+    char *new_argv[30];
+    char new_argv_buf[PATH_MAX + 1024];
+    uint32_t new_argv_i = 0; 
+    uint32_t new_argv_buf_i = 0;
+
+    int cache_dir = -1;
+    {
+        char cache_dir_buf[PATH_MAX * 2];
+        size_t i = 0;
+        size_t cmake_binary_dir_path_len = strlen(cmake_binary_dir_path);
+
+        memcpy(cache_dir_buf + i, cmake_binary_dir_path, cmake_binary_dir_path_len);
+        i += cmake_binary_dir_path_len;
+
+        cache_dir_buf[i] = '/';
+        i += 1;
+
+        memcpy(cache_dir_buf + i, "zig1-cache", strlen("zig1-cache"));
+        i += strlen("zig1-cache");
+
+        cache_dir_buf[i] = 0;
+
+        mkdir(cache_dir_buf, 0777);
+        cache_dir = err_wrap("opening cache dir",
+                open(cache_dir_buf, O_DIRECTORY|O_RDONLY|O_CLOEXEC|O_PATH));
+    }
+
+    // Construct a new argv for the WASI code which has absolute paths
+    // converted to relative paths, and has the target and terminal status
+    // autodetected.
+
+    // wasm file path
+    new_argv[new_argv_i] = argv[argv_i];
+    new_argv_i += 1;
+    argv_i += 1;
+
+    for(; argv[argv_i]; argv_i += 1) {
+        new_argv[new_argv_i] = argv[argv_i];
+        new_argv_i += 1;
+    }
+
+    {
+        new_argv[new_argv_i] = "--pkg-begin";
+        new_argv_i += 1;
+
+        new_argv[new_argv_i] = "build_options";
+        new_argv_i += 1;
+
+        char *build_options_path = new_argv_buf + new_argv_buf_i;
+        size_t rel_cmake_bin_path_len = strlen(rel_cmake_bin_path);
+        memcpy(new_argv_buf + new_argv_buf_i, rel_cmake_bin_path, rel_cmake_bin_path_len);
+        new_argv_buf_i += rel_cmake_bin_path_len;
+        new_argv_buf[new_argv_buf_i] = '/';
+        new_argv_buf_i += 1;
+        memcpy(new_argv_buf + new_argv_buf_i, "config.zig", strlen("config.zig"));
+        new_argv_buf_i += strlen("config.zig");
+        new_argv_buf[new_argv_buf_i] = 0;
+        new_argv_buf_i += 1;
+
+        new_argv[new_argv_i] = build_options_path;
+        new_argv_i += 1;
+
+        new_argv[new_argv_i] = "--pkg-end";
+        new_argv_i += 1;
+    }
+
+    if (isatty(STDERR_FILENO) != 0) {
+        new_argv[new_argv_i] = "--color";
+        new_argv_i += 1;
+
+        new_argv[new_argv_i] = "on";
+        new_argv_i += 1;
+    }
+
+    new_argv[new_argv_i] = NULL;
 
     const struct ByteSlice mod = read_file_alloc(wasm_file);
 
     int cwd = err_wrap("opening cwd", open(".", O_DIRECTORY|O_RDONLY|O_CLOEXEC|O_PATH));
-    mkdir(zig_cache_dir_path, 0666);
-    int cache_dir = err_wrap("opening cache dir", open(zig_cache_dir_path, O_DIRECTORY|O_RDONLY|O_CLOEXEC|O_PATH));
     int zig_lib_dir = err_wrap("opening zig lib dir", open(zig_lib_dir_path, O_DIRECTORY|O_RDONLY|O_CLOEXEC|O_PATH));
 
     add_preopen(0, "stdin", STDIN_FILENO);
@@ -4324,7 +4407,7 @@ int main(int argc, char **argv) {
     vm.memory_len = memory_len;
     vm.imports = imports;
     vm.imports_len = imports_len;
-    vm.args = argv + vm_argv_start;
+    vm.args = new_argv;
     vm.table = table;
 
     {
