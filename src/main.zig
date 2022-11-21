@@ -160,8 +160,10 @@ fn main2(args: []const [*:0]const u8) !void {
         _ = try leb.readULEB128(u32, module_reader);
 
         vm.functions = try arena.alloc(Function, try leb.readULEB128(u32, module_reader));
-        for (vm.functions) |*function|
+        for (vm.functions) |*function, func_idx| {
+            function.id = @intCast(u32, vm.imports.len + func_idx);
             function.type_idx = try leb.readULEB128(u32, module_reader);
+        }
 
         while (@intToEnum(wasm.Section, try module_reader.readByte()) != .table)
             assert(fseek(module_file, @intCast(c_long, try leb.readULEB128(u32, module_reader)), .CUR) == 0);
@@ -286,40 +288,36 @@ fn main2(args: []const [*:0]const u8) !void {
 
             assert(try leb.readULEB128(u32, module_reader) == vm.functions.len);
             var pc = ProgramCounter{ .opcode = 0, .operand = 0 };
-            for (vm.functions) |*function| {
+            var stack: StackInfo = undefined;
+            for (vm.functions) |*func| {
                 _ = try leb.readULEB128(u32, module_reader);
 
-                const type_info = &vm.types[function.type_idx];
-                function.locals_count = 0;
-                function.local_types = .{};
-                try function.local_types.resize(
-                    arena,
-                    type_info.param_count + function.locals_count,
-                    false,
-                );
-                var it = type_info.param_types.iterator(.{});
-                while (it.next()) |index| function.local_types.set(index);
+                stack = .{};
+                const type_info = vm.types[func.type_idx];
+                var param_i: u32 = 0;
+                while (param_i < type_info.param_count) : (param_i += 1) stack.push(@intToEnum(
+                    StackInfo.EntryType,
+                    @boolToInt(type_info.param_types.isSet(param_i)),
+                ));
+                const params_size = stack.top_offset;
 
                 var local_sets_count = try leb.readULEB128(u32, module_reader);
                 while (local_sets_count > 0) : (local_sets_count -= 1) {
-                    const set_count = try leb.readULEB128(u32, module_reader);
-                    const local_type = try leb.readILEB128(i33, module_reader);
-                    function.locals_count += set_count;
-                    try function.local_types.resize(
-                        arena,
-                        type_info.param_count + function.locals_count,
-                        switch (local_type) {
-                            -1, -3 => false,
-                            -2, -4 => true,
-                            else => unreachable,
-                        },
-                    );
+                    var local_set_count = try leb.readULEB128(u32, module_reader);
+                    const local_type = switch (try leb.readILEB128(i33, module_reader)) {
+                        -1, -3 => StackInfo.EntryType.i32,
+                        -2, -4 => StackInfo.EntryType.i64,
+                        else => unreachable,
+                    };
+                    while (local_set_count > 0) : (local_set_count -= 1)
+                        stack.push(local_type);
                 }
+                func.locals_size = stack.top_offset - params_size;
+                max_frame_size = @max(params_size + func.locals_size, max_frame_size);
 
-                max_frame_size = @max(type_info.param_count + function.locals_count, max_frame_size);
-
-                function.entry_pc = pc;
-                try vm.decodeCode(module_reader, function, &pc);
+                func.entry_pc = pc;
+                decode_log.debug("decoding func id {}", .{func.id});
+                try vm.decodeCode(module_reader, type_info, &pc, &stack);
             }
 
             var opcode_counts = [1]u64{0} ** 0x100;
@@ -364,7 +362,6 @@ fn main2(args: []const [*:0]const u8) !void {
             stats_log.debug("{} non-zero offsets", .{offset_counts[1]});
             stats_log.debug("{} max offset", .{max_offset});
             stats_log.debug("{} max label depth", .{max_label_depth});
-            stats_log.debug("{} max stack depth", .{max_stack_depth});
             stats_log.debug("{} max frame size", .{max_frame_size});
             stats_log.debug("{} max param count", .{max_param_count});
         }
@@ -390,13 +387,13 @@ fn main2(args: []const [*:0]const u8) !void {
         }
     }
 
-    vm.stack = try arena.alloc(u64, 10000000);
+    vm.stack = try arena.alloc(u32, 10000000);
     if (check_stack_types) {
         vm.stack_types = .{};
         try vm.stack_types.resize(arena, 10000000, false);
     }
     vm.stack_top = 0;
-    vm.call(start_fn_idx);
+    vm.call(&vm.functions[start_fn_idx - @intCast(u32, vm.imports.len)]);
     vm.run();
 }
 
@@ -405,19 +402,20 @@ const Opcode = enum {
     br_void,
     br_32,
     br_64,
-    br_if_nez_void,
-    br_if_nez_32,
-    br_if_nez_64,
-    br_if_eqz_void,
-    br_if_eqz_32,
-    br_if_eqz_64,
+    br_nez_void,
+    br_nez_32,
+    br_nez_64,
+    br_eqz_void,
+    br_eqz_32,
+    br_eqz_64,
     br_table_void,
     br_table_32,
     br_table_64,
     return_void,
     return_32,
     return_64,
-    call,
+    call_import,
+    call_func,
     drop_32,
     drop_64,
     select_32,
@@ -444,7 +442,6 @@ var offset_counts = [2]u64{ 0, 0 };
 var max_offset: u64 = 0;
 
 var max_label_depth: u64 = 0;
-var max_stack_depth: u64 = 0;
 
 const ProgramCounter = struct { opcode: u32, operand: u32 };
 
@@ -461,10 +458,10 @@ const TypeInfo = struct {
 };
 
 const Function = struct {
+    id: u32,
     entry_pc: ProgramCounter,
     type_idx: u32,
-    locals_count: u32,
-    local_types: std.DynamicBitSetUnmanaged,
+    locals_size: u32,
 };
 
 const Import = struct {
@@ -508,7 +505,8 @@ const Import = struct {
 
 const Label = struct {
     opcode: wasm.Opcode,
-    stack_depth: u32,
+    stack_index: u32,
+    stack_offset: u32,
     type_info: TypeInfo,
     // this is a maxInt terminated linked list that is stored in the operands array
     ref_list: u32 = math.maxInt(u32),
@@ -520,16 +518,68 @@ const Label = struct {
     fn operandCount(self: Label) u32 {
         return if (self.opcode == .loop) self.type_info.param_count else self.type_info.result_count;
     }
-    fn operandType(self: Label, index: u32) bool {
-        return if (self.opcode == .loop)
+
+    fn operandType(self: Label, index: u32) StackInfo.EntryType {
+        return StackInfo.EntryType.fromBool(if (self.opcode == .loop)
             self.type_info.param_types.isSet(index)
         else
-            self.type_info.result_types.isSet(index);
+            self.type_info.result_types.isSet(index));
+    }
+};
+
+const StackInfo = struct {
+    // f32 is stored as i32 and f64 is stored as i64
+    const EntryType = enum {
+        i32,
+        i64,
+
+        fn size(self: EntryType) u32 {
+            return switch (self) {
+                .i32 => 1,
+                .i64 => 2,
+            };
+        }
+
+        fn toBool(self: EntryType) bool {
+            return self != .i32;
+        }
+
+        fn fromBool(self: bool) EntryType {
+            return @intToEnum(EntryType, @boolToInt(self));
+        }
+    };
+    const max_stack_depth = 1 << 12;
+
+    top_index: u32 = 0,
+    top_offset: u32 = 0,
+    types: std.StaticBitSet(max_stack_depth) = undefined,
+    offsets: [max_stack_depth]u32 = undefined,
+
+    fn push(self: *StackInfo, entry_type: EntryType) void {
+        self.types.setValue(self.top_index, entry_type.toBool());
+        self.offsets[self.top_index] = self.top_offset;
+        self.top_index += 1;
+        self.top_offset += entry_type.size();
+    }
+
+    fn pop(self: *StackInfo, entry_type: EntryType) void {
+        assert(self.top() == entry_type);
+        self.top_index -= 1;
+        self.top_offset -= entry_type.size();
+        assert(self.top_offset == self.offsets[self.top_index]);
+    }
+
+    fn top(self: StackInfo) EntryType {
+        return EntryType.fromBool(self.types.isSet(self.top_index - 1));
+    }
+
+    fn local(self: StackInfo, local_idx: u32) EntryType {
+        return EntryType.fromBool(self.types.isSet(local_idx));
     }
 };
 
 const VirtualMachine = struct {
-    stack: []u64,
+    stack: []u32,
     stack_types: if (check_stack_types) std.DynamicBitSetUnmanaged else void,
     /// Points to one after the last stack item.
     stack_top: u32,
@@ -545,31 +595,42 @@ const VirtualMachine = struct {
     args: []const [*:0]const u8,
     table: []u32,
 
-    fn decodeCode(vm: *VirtualMachine, reader: anytype, function: *Function, pc: *ProgramCounter) !void {
+    fn decodeCode(
+        vm: *VirtualMachine,
+        reader: anytype,
+        func_type_info: TypeInfo,
+        pc: *ProgramCounter,
+        stack: *StackInfo,
+    ) !void {
         const opcodes = vm.opcodes;
         const operands = vm.operands;
-        const function_type_info = &vm.types[function.type_idx];
+
+        // push return address
+        const frame_size = stack.top_offset;
+        stack.push(.i32);
+        stack.push(.i32);
 
         var unreachable_depth: u32 = 0;
-        var stack_depth = function_type_info.param_count + function.locals_count + 2;
-        var stack_types: std.StaticBitSet(1 << 12) = undefined;
-
         var label_i: u32 = 0;
         var labels: [1 << 9]Label = undefined;
         labels[label_i] = .{
             .opcode = .block,
-            .stack_depth = stack_depth,
-            .type_info = function_type_info.*,
+            .stack_index = stack.top_index,
+            .stack_offset = stack.top_offset,
+            .type_info = func_type_info,
         };
 
         while (true) {
+            assert(stack.top_index >= labels[0].stack_index);
+            assert(stack.top_offset >= labels[0].stack_offset);
             const opcode = try reader.readByte();
             var prefixed_opcode: u8 = if (@intToEnum(wasm.Opcode, opcode) == .prefixed)
                 @intCast(u8, try leb.readULEB128(u32, reader))
             else
                 undefined;
-            decode_log.debug("stack_depth = {}, opcode = {s}, prefixed_opcode = {s}", .{
-                stack_depth,
+            decode_log.debug("stack.top_index = {}, stack.top_offset = {}, opcode = {s}, prefixed_opcode = {s}", .{
+                stack.top_index,
+                stack.top_offset,
                 @tagName(@intToEnum(wasm.Opcode, opcode)),
                 if (@intToEnum(wasm.Opcode, opcode) == .prefixed)
                     @tagName(@intToEnum(wasm.PrefixedOpcode, prefixed_opcode))
@@ -577,451 +638,325 @@ const VirtualMachine = struct {
                     "(none)",
             });
 
-            const initial_stack_depth = stack_depth;
-            if (unreachable_depth == 0) {
-                stack_depth = switch (@intToEnum(wasm.Opcode, opcode)) {
-                    .@"unreachable",
-                    .nop,
-                    .block,
-                    .loop,
-                    .@"else",
-                    .end,
-                    .br,
-                    .call,
-                    .@"return",
-                    => stack_depth,
+            if (unreachable_depth == 0) switch (@intToEnum(wasm.Opcode, opcode)) {
+                .@"unreachable",
+                .nop,
+                .block,
+                .loop,
+                .@"else",
+                .end,
+                .br,
+                .@"return",
+                .call,
+                .local_get,
+                .local_set,
+                .local_tee,
+                .global_get,
+                .global_set,
+                .drop,
+                .select,
+                => {}, // handled manually below
 
-                    .@"if",
-                    .br_if,
-                    .br_table,
-                    .call_indirect,
-                    .drop,
-                    .local_set,
-                    .global_set,
-                    => stack_depth - 1,
+                .@"if",
+                .br_if,
+                .br_table,
+                .call_indirect,
+                => stack.pop(.i32),
 
-                    .select => stack_depth - 3 + 1,
+                .memory_size,
+                .i32_const,
+                .f32_const,
+                => stack.push(.i32),
 
-                    .local_get,
-                    .global_get,
-                    .memory_size,
-                    .i32_const,
-                    .i64_const,
-                    .f32_const,
-                    .f64_const,
-                    => stack_depth + 1,
+                .i64_const,
+                .f64_const,
+                => stack.push(.i64),
 
-                    .local_tee,
-                    .i32_load,
-                    .i64_load,
-                    .f32_load,
-                    .f64_load,
-                    .i32_load8_s,
-                    .i32_load8_u,
-                    .i32_load16_s,
-                    .i32_load16_u,
-                    .i64_load8_s,
-                    .i64_load8_u,
-                    .i64_load16_s,
-                    .i64_load16_u,
-                    .i64_load32_s,
-                    .i64_load32_u,
-                    .memory_grow,
-                    .i32_eqz,
-                    .i32_clz,
-                    .i32_ctz,
-                    .i32_popcnt,
-                    .i64_eqz,
-                    .i64_clz,
-                    .i64_ctz,
-                    .i64_popcnt,
-                    .f32_abs,
-                    .f32_neg,
-                    .f32_ceil,
-                    .f32_floor,
-                    .f32_trunc,
-                    .f32_nearest,
-                    .f32_sqrt,
-                    .f64_abs,
-                    .f64_neg,
-                    .f64_ceil,
-                    .f64_floor,
-                    .f64_trunc,
-                    .f64_nearest,
-                    .f64_sqrt,
-                    .i32_wrap_i64,
-                    .i32_trunc_f32_s,
-                    .i32_trunc_f32_u,
-                    .i32_trunc_f64_s,
-                    .i32_trunc_f64_u,
-                    .i64_extend_i32_s,
-                    .i64_extend_i32_u,
-                    .i64_trunc_f32_s,
-                    .i64_trunc_f32_u,
-                    .i64_trunc_f64_s,
-                    .i64_trunc_f64_u,
-                    .f32_convert_i32_s,
-                    .f32_convert_i32_u,
-                    .f32_convert_i64_s,
-                    .f32_convert_i64_u,
-                    .f32_demote_f64,
-                    .f64_convert_i32_s,
-                    .f64_convert_i32_u,
-                    .f64_convert_i64_s,
-                    .f64_convert_i64_u,
-                    .f64_promote_f32,
-                    .i32_reinterpret_f32,
-                    .i64_reinterpret_f64,
-                    .f32_reinterpret_i32,
-                    .f64_reinterpret_i64,
-                    .i32_extend8_s,
-                    .i32_extend16_s,
-                    .i64_extend8_s,
-                    .i64_extend16_s,
-                    .i64_extend32_s,
-                    => stack_depth - 1 + 1,
+                .i32_load,
+                .f32_load,
+                .i32_load8_s,
+                .i32_load8_u,
+                .i32_load16_s,
+                .i32_load16_u,
+                => {
+                    stack.pop(.i32);
+                    stack.push(.i32);
+                },
 
-                    .i32_store,
-                    .i64_store,
-                    .f32_store,
-                    .f64_store,
-                    .i32_store8,
-                    .i32_store16,
-                    .i64_store8,
-                    .i64_store16,
-                    .i64_store32,
-                    => stack_depth - 2,
+                .i64_load,
+                .f64_load,
+                .i64_load8_s,
+                .i64_load8_u,
+                .i64_load16_s,
+                .i64_load16_u,
+                .i64_load32_s,
+                .i64_load32_u,
+                => {
+                    stack.pop(.i32);
+                    stack.push(.i64);
+                },
 
-                    .i32_eq,
-                    .i32_ne,
-                    .i32_lt_s,
-                    .i32_lt_u,
-                    .i32_gt_s,
-                    .i32_gt_u,
-                    .i32_le_s,
-                    .i32_le_u,
-                    .i32_ge_s,
-                    .i32_ge_u,
-                    .i64_eq,
-                    .i64_ne,
-                    .i64_lt_s,
-                    .i64_lt_u,
-                    .i64_gt_s,
-                    .i64_gt_u,
-                    .i64_le_s,
-                    .i64_le_u,
-                    .i64_ge_s,
-                    .i64_ge_u,
-                    .f32_eq,
-                    .f32_ne,
-                    .f32_lt,
-                    .f32_gt,
-                    .f32_le,
-                    .f32_ge,
-                    .f64_eq,
-                    .f64_ne,
-                    .f64_lt,
-                    .f64_gt,
-                    .f64_le,
-                    .f64_ge,
-                    .i32_add,
-                    .i32_sub,
-                    .i32_mul,
-                    .i32_div_s,
-                    .i32_div_u,
-                    .i32_rem_s,
-                    .i32_rem_u,
-                    .i32_and,
-                    .i32_or,
-                    .i32_xor,
-                    .i32_shl,
-                    .i32_shr_s,
-                    .i32_shr_u,
-                    .i32_rotl,
-                    .i32_rotr,
-                    .i64_add,
-                    .i64_sub,
-                    .i64_mul,
-                    .i64_div_s,
-                    .i64_div_u,
-                    .i64_rem_s,
-                    .i64_rem_u,
-                    .i64_and,
-                    .i64_or,
-                    .i64_xor,
-                    .i64_shl,
-                    .i64_shr_s,
-                    .i64_shr_u,
-                    .i64_rotl,
-                    .i64_rotr,
-                    .f32_add,
-                    .f32_sub,
-                    .f32_mul,
-                    .f32_div,
-                    .f32_min,
-                    .f32_max,
-                    .f32_copysign,
-                    .f64_add,
-                    .f64_sub,
-                    .f64_mul,
-                    .f64_div,
-                    .f64_min,
-                    .f64_max,
-                    .f64_copysign,
-                    => stack_depth - 2 + 1,
+                .memory_grow,
+                .i32_eqz,
+                .i32_clz,
+                .i32_ctz,
+                .i32_popcnt,
+                .f32_abs,
+                .f32_neg,
+                .f32_ceil,
+                .f32_floor,
+                .f32_trunc,
+                .f32_nearest,
+                .f32_sqrt,
+                .i32_trunc_f32_s,
+                .i32_trunc_f32_u,
+                .f32_convert_i32_s,
+                .f32_convert_i32_u,
+                .i32_reinterpret_f32,
+                .f32_reinterpret_i32,
+                .i32_extend8_s,
+                .i32_extend16_s,
+                => {
+                    stack.pop(.i32);
+                    stack.push(.i32);
+                },
 
-                    .prefixed => switch (@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)) {
-                        .i32_trunc_sat_f32_s,
-                        .i32_trunc_sat_f32_u,
-                        .i32_trunc_sat_f64_s,
-                        .i32_trunc_sat_f64_u,
-                        .i64_trunc_sat_f32_s,
-                        .i64_trunc_sat_f32_u,
-                        .i64_trunc_sat_f64_s,
-                        .i64_trunc_sat_f64_u,
-                        => stack_depth - 1 + 1,
+                .i64_eqz,
+                .i32_wrap_i64,
+                .i32_trunc_f64_s,
+                .i32_trunc_f64_u,
+                .f32_convert_i64_s,
+                .f32_convert_i64_u,
+                .f32_demote_f64,
+                => {
+                    stack.pop(.i64);
+                    stack.push(.i32);
+                },
 
-                        .memory_init,
-                        .memory_copy,
-                        .memory_fill,
-                        .table_init,
-                        .table_copy,
-                        .table_fill,
-                        => stack_depth - 3,
+                .i64_clz,
+                .i64_ctz,
+                .i64_popcnt,
+                .f64_abs,
+                .f64_neg,
+                .f64_ceil,
+                .f64_floor,
+                .f64_trunc,
+                .f64_nearest,
+                .f64_sqrt,
+                .i64_trunc_f64_s,
+                .i64_trunc_f64_u,
+                .f64_convert_i64_s,
+                .f64_convert_i64_u,
+                .i64_reinterpret_f64,
+                .f64_reinterpret_i64,
+                .i64_extend8_s,
+                .i64_extend16_s,
+                .i64_extend32_s,
+                => {
+                    stack.pop(.i64);
+                    stack.push(.i64);
+                },
 
-                        .data_drop,
-                        .elem_drop,
-                        => stack_depth,
+                .i64_extend_i32_s,
+                .i64_extend_i32_u,
+                .i64_trunc_f32_s,
+                .i64_trunc_f32_u,
+                .f64_convert_i32_s,
+                .f64_convert_i32_u,
+                .f64_promote_f32,
+                => {
+                    stack.pop(.i32);
+                    stack.push(.i64);
+                },
 
-                        .table_grow => stack_depth - 2 + 1,
+                .i32_store,
+                .f32_store,
+                .i32_store8,
+                .i32_store16,
+                => {
+                    stack.pop(.i32);
+                    stack.pop(.i32);
+                },
 
-                        .table_size => stack_depth + 1,
+                .i64_store,
+                .f64_store,
+                .i64_store8,
+                .i64_store16,
+                .i64_store32,
+                => {
+                    stack.pop(.i64);
+                    stack.pop(.i32);
+                },
 
-                        _ => unreachable,
+                .i32_eq,
+                .i32_ne,
+                .i32_lt_s,
+                .i32_lt_u,
+                .i32_gt_s,
+                .i32_gt_u,
+                .i32_le_s,
+                .i32_le_u,
+                .i32_ge_s,
+                .i32_ge_u,
+                .f32_eq,
+                .f32_ne,
+                .f32_lt,
+                .f32_gt,
+                .f32_le,
+                .f32_ge,
+                => {
+                    stack.pop(.i32);
+                    stack.pop(.i32);
+                    stack.push(.i32);
+                },
+
+                .i64_eq,
+                .i64_ne,
+                .i64_lt_s,
+                .i64_lt_u,
+                .i64_gt_s,
+                .i64_gt_u,
+                .i64_le_s,
+                .i64_le_u,
+                .i64_ge_s,
+                .i64_ge_u,
+                .f64_eq,
+                .f64_ne,
+                .f64_lt,
+                .f64_gt,
+                .f64_le,
+                .f64_ge,
+                => {
+                    stack.pop(.i64);
+                    stack.pop(.i64);
+                    stack.push(.i32);
+                },
+
+                .i32_add,
+                .i32_sub,
+                .i32_mul,
+                .i32_div_s,
+                .i32_div_u,
+                .i32_rem_s,
+                .i32_rem_u,
+                .i32_and,
+                .i32_or,
+                .i32_xor,
+                .i32_shl,
+                .i32_shr_s,
+                .i32_shr_u,
+                .i32_rotl,
+                .i32_rotr,
+                .f32_add,
+                .f32_sub,
+                .f32_mul,
+                .f32_div,
+                .f32_min,
+                .f32_max,
+                .f32_copysign,
+                => {
+                    stack.pop(.i32);
+                    stack.pop(.i32);
+                    stack.push(.i32);
+                },
+
+                .i64_add,
+                .i64_sub,
+                .i64_mul,
+                .i64_div_s,
+                .i64_div_u,
+                .i64_rem_s,
+                .i64_rem_u,
+                .i64_and,
+                .i64_or,
+                .i64_xor,
+                .i64_shl,
+                .i64_shr_s,
+                .i64_shr_u,
+                .i64_rotl,
+                .i64_rotr,
+                .f64_add,
+                .f64_sub,
+                .f64_mul,
+                .f64_div,
+                .f64_min,
+                .f64_max,
+                .f64_copysign,
+                => {
+                    stack.pop(.i64);
+                    stack.pop(.i64);
+                    stack.push(.i64);
+                },
+
+                .prefixed => switch (@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)) {
+                    .i32_trunc_sat_f32_s,
+                    .i32_trunc_sat_f32_u,
+                    => {
+                        stack.pop(.i32);
+                        stack.push(.i32);
                     },
 
-                    _ => unreachable,
-                };
-                switch (@intToEnum(wasm.Opcode, opcode)) {
-                    .@"unreachable",
-                    .nop,
-                    .block,
-                    .loop,
-                    .@"else",
-                    .end,
-                    .br,
-                    .call,
-                    .@"return",
-                    .@"if",
-                    .br_if,
-                    .br_table,
-                    .call_indirect,
-                    .drop,
-                    .select,
-                    .local_set,
-                    .local_get,
-                    .local_tee,
-                    .global_set,
-                    .global_get,
-                    .i32_store,
-                    .i64_store,
-                    .f32_store,
-                    .f64_store,
-                    .i32_store8,
-                    .i32_store16,
-                    .i64_store8,
-                    .i64_store16,
-                    .i64_store32,
+                    .i32_trunc_sat_f64_s,
+                    .i32_trunc_sat_f64_u,
+                    => {
+                        stack.pop(.i64);
+                        stack.push(.i32);
+                    },
+
+                    .i64_trunc_sat_f32_s,
+                    .i64_trunc_sat_f32_u,
+                    => {
+                        stack.pop(.i32);
+                        stack.push(.i64);
+                    },
+
+                    .i64_trunc_sat_f64_s,
+                    .i64_trunc_sat_f64_u,
+                    => {
+                        stack.pop(.i64);
+                        stack.push(.i64);
+                    },
+
+                    .memory_init,
+                    .memory_copy,
+                    .memory_fill,
+                    .table_init,
+                    .table_copy,
+                    => {
+                        stack.pop(.i32);
+                        stack.pop(.i32);
+                        stack.pop(.i32);
+                    },
+
+                    .table_fill => {
+                        stack.pop(.i32);
+                        stack.pop(unreachable);
+                        stack.pop(.i32);
+                    },
+
+                    .data_drop,
+                    .elem_drop,
                     => {},
 
-                    .i32_const,
-                    .f32_const,
-                    .memory_size,
-                    .i32_load,
-                    .f32_load,
-                    .i32_load8_s,
-                    .i32_load8_u,
-                    .i32_load16_s,
-                    .i32_load16_u,
-                    .memory_grow,
-                    .i32_eqz,
-                    .i32_clz,
-                    .i32_ctz,
-                    .i32_popcnt,
-                    .i64_eqz,
-                    .f32_abs,
-                    .f32_neg,
-                    .f32_ceil,
-                    .f32_floor,
-                    .f32_trunc,
-                    .f32_nearest,
-                    .f32_sqrt,
-                    .i32_wrap_i64,
-                    .i32_trunc_f32_s,
-                    .i32_trunc_f32_u,
-                    .i32_trunc_f64_s,
-                    .i32_trunc_f64_u,
-                    .f32_convert_i32_s,
-                    .f32_convert_i32_u,
-                    .f32_convert_i64_s,
-                    .f32_convert_i64_u,
-                    .f32_demote_f64,
-                    .i32_reinterpret_f32,
-                    .f32_reinterpret_i32,
-                    .i32_extend8_s,
-                    .i32_extend16_s,
-                    .i32_eq,
-                    .i32_ne,
-                    .i32_lt_s,
-                    .i32_lt_u,
-                    .i32_gt_s,
-                    .i32_gt_u,
-                    .i32_le_s,
-                    .i32_le_u,
-                    .i32_ge_s,
-                    .i32_ge_u,
-                    .i64_eq,
-                    .i64_ne,
-                    .i64_lt_s,
-                    .i64_lt_u,
-                    .i64_gt_s,
-                    .i64_gt_u,
-                    .i64_le_s,
-                    .i64_le_u,
-                    .i64_ge_s,
-                    .i64_ge_u,
-                    .f32_eq,
-                    .f32_ne,
-                    .f32_lt,
-                    .f32_gt,
-                    .f32_le,
-                    .f32_ge,
-                    .f64_eq,
-                    .f64_ne,
-                    .f64_lt,
-                    .f64_gt,
-                    .f64_le,
-                    .f64_ge,
-                    .i32_add,
-                    .i32_sub,
-                    .i32_mul,
-                    .i32_div_s,
-                    .i32_div_u,
-                    .i32_rem_s,
-                    .i32_rem_u,
-                    .i32_and,
-                    .i32_or,
-                    .i32_xor,
-                    .i32_shl,
-                    .i32_shr_s,
-                    .i32_shr_u,
-                    .i32_rotl,
-                    .i32_rotr,
-                    .f32_add,
-                    .f32_sub,
-                    .f32_mul,
-                    .f32_div,
-                    .f32_min,
-                    .f32_max,
-                    .f32_copysign,
-                    => stack_types.unset(stack_depth - 1),
-
-                    .i64_const,
-                    .f64_const,
-                    .i64_load,
-                    .f64_load,
-                    .i64_load8_s,
-                    .i64_load8_u,
-                    .i64_load16_s,
-                    .i64_load16_u,
-                    .i64_load32_s,
-                    .i64_load32_u,
-                    .i64_clz,
-                    .i64_ctz,
-                    .i64_popcnt,
-                    .f64_abs,
-                    .f64_neg,
-                    .f64_ceil,
-                    .f64_floor,
-                    .f64_trunc,
-                    .f64_nearest,
-                    .f64_sqrt,
-                    .i64_extend_i32_s,
-                    .i64_extend_i32_u,
-                    .i64_trunc_f32_s,
-                    .i64_trunc_f32_u,
-                    .i64_trunc_f64_s,
-                    .i64_trunc_f64_u,
-                    .f64_convert_i32_s,
-                    .f64_convert_i32_u,
-                    .f64_convert_i64_s,
-                    .f64_convert_i64_u,
-                    .f64_promote_f32,
-                    .i64_reinterpret_f64,
-                    .f64_reinterpret_i64,
-                    .i64_extend8_s,
-                    .i64_extend16_s,
-                    .i64_extend32_s,
-                    .i64_add,
-                    .i64_sub,
-                    .i64_mul,
-                    .i64_div_s,
-                    .i64_div_u,
-                    .i64_rem_s,
-                    .i64_rem_u,
-                    .i64_and,
-                    .i64_or,
-                    .i64_xor,
-                    .i64_shl,
-                    .i64_shr_s,
-                    .i64_shr_u,
-                    .i64_rotl,
-                    .i64_rotr,
-                    .f64_add,
-                    .f64_sub,
-                    .f64_mul,
-                    .f64_div,
-                    .f64_min,
-                    .f64_max,
-                    .f64_copysign,
-                    => stack_types.set(stack_depth - 1),
-
-                    .prefixed => switch (@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)) {
-                        .memory_init,
-                        .memory_copy,
-                        .memory_fill,
-                        .table_init,
-                        .table_copy,
-                        .table_fill,
-                        .data_drop,
-                        .elem_drop,
-                        => {},
-
-                        .i32_trunc_sat_f32_s,
-                        .i32_trunc_sat_f32_u,
-                        .i32_trunc_sat_f64_s,
-                        .i32_trunc_sat_f64_u,
-                        .table_grow,
-                        .table_size,
-                        => stack_types.unset(stack_depth - 1),
-
-                        .i64_trunc_sat_f32_s,
-                        .i64_trunc_sat_f32_u,
-                        .i64_trunc_sat_f64_s,
-                        .i64_trunc_sat_f64_u,
-                        => stack_types.set(stack_depth - 1),
-
-                        _ => unreachable,
+                    .table_grow => {
+                        stack.pop(.i32);
+                        stack.pop(unreachable);
+                        stack.push(.i32);
                     },
 
+                    .table_size => stack.push(.i32),
+
                     _ => unreachable,
-                }
-            }
+                },
+
+                _ => unreachable,
+            };
 
             switch (@intToEnum(wasm.Opcode, opcode)) {
                 .@"unreachable" => if (unreachable_depth == 0) {
                     opcodes[pc.opcode] = @enumToInt(Opcode.@"unreachable");
                     pc.opcode += 1;
+                    unreachable_depth += 1;
                 },
                 .nop,
                 .i32_reinterpret_f32,
@@ -1045,18 +980,32 @@ const VirtualMachine = struct {
                                 else => unreachable,
                             },
                         } else vm.types[@intCast(u32, block_type)];
+
+                        var param_i = type_info.param_count;
+                        while (param_i > 0) {
+                            param_i -= 1;
+                            stack.pop(StackInfo.EntryType.fromBool(
+                                type_info.param_types.isSet(param_i),
+                            ));
+                        }
                         label.* = .{
                             .opcode = opc,
-                            .stack_depth = stack_depth - type_info.param_count,
+                            .stack_index = stack.top_index,
+                            .stack_offset = stack.top_offset,
                             .type_info = type_info,
                         };
+                        while (param_i < type_info.param_count) : (param_i += 1)
+                            stack.push(StackInfo.EntryType.fromBool(
+                                type_info.param_types.isSet(param_i),
+                            ));
+
                         switch (opc) {
                             .block => {},
                             .loop => {
                                 label.extra = .{ .loop_pc = pc.* };
                             },
                             .@"if" => {
-                                opcodes[pc.opcode] = @enumToInt(Opcode.br_if_eqz_void);
+                                opcodes[pc.opcode] = @enumToInt(Opcode.br_eqz_void);
                                 pc.opcode += 1;
                                 operands[pc.operand] = 0;
                                 label.extra = .{ .else_ref = pc.operand + 1 };
@@ -1070,31 +1019,46 @@ const VirtualMachine = struct {
                     const label = &labels[label_i];
                     assert(label.opcode == .@"if");
                     label.opcode = .@"else";
+
                     if (unreachable_depth == 0) {
                         const operand_count = label.operandCount();
+                        var operand_i = operand_count;
+                        while (operand_i > 0) {
+                            operand_i -= 1;
+                            stack.pop(label.operandType(operand_i));
+                        }
+                        assert(stack.top_index == label.stack_index);
+                        assert(stack.top_offset == label.stack_offset);
+
                         opcodes[pc.opcode] = @enumToInt(switch (operand_count) {
                             0 => Opcode.br_void,
                             1 => switch (label.operandType(0)) {
-                                false => Opcode.br_32,
-                                true => Opcode.br_64,
+                                .i32 => Opcode.br_32,
+                                .i64 => Opcode.br_64,
                             },
                             else => unreachable,
                         });
                         pc.opcode += 1;
-                        operands[pc.operand + 0] = stack_depth - operand_count - label.stack_depth;
+                        operands[pc.operand + 0] = stack.top_offset - label.stack_offset;
                         operands[pc.operand + 1] = label.ref_list;
                         label.ref_list = pc.operand + 1;
                         pc.operand += 3;
-                        assert(stack_depth - label.type_info.result_count == label.stack_depth);
                     } else unreachable_depth = 0;
+
                     operands[label.extra.else_ref + 0] = pc.opcode;
                     operands[label.extra.else_ref + 1] = pc.operand;
                     label.extra = undefined;
-                    stack_depth = label.stack_depth + label.type_info.param_count;
+
+                    stack.top_index = label.stack_index;
+                    stack.top_offset = label.stack_offset;
+                    var param_i: u32 = 0;
+                    while (param_i < label.type_info.param_count) : (param_i += 1)
+                        stack.push(StackInfo.EntryType.fromBool(
+                            label.type_info.param_types.isSet(param_i),
+                        ));
                 },
                 .end => {
                     if (unreachable_depth <= 1) {
-                        unreachable_depth = 0;
                         const label = &labels[label_i];
                         const target_pc = if (label.opcode == .loop) &label.extra.loop_pc else pc;
                         if (label.opcode == .@"if") {
@@ -1109,27 +1073,46 @@ const VirtualMachine = struct {
                             operands[ref + 1] = target_pc.operand;
                             ref = next_ref;
                         }
-                        stack_depth = label.stack_depth + label.type_info.result_count;
+
+                        if (unreachable_depth == 0) {
+                            var result_i = label.type_info.result_count;
+                            while (result_i > 0) {
+                                result_i -= 1;
+                                stack.pop(StackInfo.EntryType.fromBool(
+                                    label.type_info.result_types.isSet(result_i),
+                                ));
+                            }
+                        } else unreachable_depth = 0;
 
                         if (label_i == 0) {
-                            const operand_count = labels[0].operandCount();
-                            opcodes[pc.opcode] = @enumToInt(switch (operand_count) {
+                            assert(stack.top_index == label.stack_index);
+                            assert(stack.top_offset == label.stack_offset);
+
+                            opcodes[pc.opcode] = @enumToInt(switch (labels[0].type_info.result_count) {
                                 0 => Opcode.return_void,
-                                1 => switch (labels[0].operandType(0)) {
-                                    false => Opcode.return_32,
-                                    true => Opcode.return_64,
+                                1 => switch (StackInfo.EntryType.fromBool(
+                                    labels[0].type_info.result_types.isSet(0),
+                                )) {
+                                    .i32 => Opcode.return_32,
+                                    .i64 => Opcode.return_64,
                                 },
                                 else => unreachable,
                             });
                             pc.opcode += 1;
-                            operands[pc.operand + 0] = 2 + operand_count;
-                            stack_depth -= operand_count;
-                            assert(stack_depth == labels[0].stack_depth);
-                            operands[pc.operand + 1] = stack_depth;
+                            operands[pc.operand + 0] = stack.top_offset - labels[0].stack_offset;
+                            operands[pc.operand + 1] = frame_size;
                             pc.operand += 2;
                             return;
                         }
                         label_i -= 1;
+
+                        stack.top_index = label.stack_index;
+                        stack.top_offset = label.stack_offset;
+                        var result_i: u32 = 0;
+                        while (result_i < label.type_info.result_count) : (result_i += 1)
+                            stack.push(StackInfo.EntryType.fromBool(
+                                label.type_info.result_types.isSet(result_i),
+                            ));
                     } else unreachable_depth -= 1;
                 },
                 .br,
@@ -1139,30 +1122,43 @@ const VirtualMachine = struct {
                     if (unreachable_depth == 0) {
                         const label = &labels[label_i - label_idx];
                         const operand_count = label.operandCount();
+                        var operand_i = operand_count;
+                        while (operand_i > 0) {
+                            operand_i -= 1;
+                            stack.pop(label.operandType(operand_i));
+                        }
+
                         opcodes[pc.opcode] = @enumToInt(switch (opc) {
                             .br => switch (operand_count) {
                                 0 => Opcode.br_void,
                                 1 => switch (label.operandType(0)) {
-                                    false => Opcode.br_32,
-                                    true => Opcode.br_64,
+                                    .i32 => Opcode.br_32,
+                                    .i64 => Opcode.br_64,
                                 },
                                 else => unreachable,
                             },
                             .br_if => switch (label.type_info.result_count) {
-                                0 => Opcode.br_if_nez_void,
+                                0 => Opcode.br_nez_void,
                                 1 => switch (label.operandType(0)) {
-                                    false => Opcode.br_if_nez_32,
-                                    true => Opcode.br_if_nez_64,
+                                    .i32 => Opcode.br_nez_32,
+                                    .i64 => Opcode.br_nez_64,
                                 },
                                 else => unreachable,
                             },
                             else => unreachable,
                         });
                         pc.opcode += 1;
-                        operands[pc.operand + 0] = stack_depth - operand_count - label.stack_depth;
+                        operands[pc.operand + 0] = stack.top_offset - label.stack_offset;
                         operands[pc.operand + 1] = label.ref_list;
                         label.ref_list = pc.operand + 1;
                         pc.operand += 3;
+
+                        switch (opc) {
+                            .br => unreachable_depth += 1,
+                            .br_if => while (operand_i < operand_count) : (operand_i += 1)
+                                stack.push(label.operandType(operand_i)),
+                            else => unreachable,
+                        }
                     }
                 },
                 .br_table => {
@@ -1172,13 +1168,19 @@ const VirtualMachine = struct {
                         const label_idx = try leb.readULEB128(u32, reader);
                         if (unreachable_depth != 0) continue;
                         const label = &labels[label_i - label_idx];
-                        const operand_count = label.operandCount();
                         if (i == 0) {
+                            const operand_count = label.operandCount();
+                            var operand_i = operand_count;
+                            while (operand_i > 0) {
+                                operand_i -= 1;
+                                stack.pop(label.operandType(operand_i));
+                            }
+
                             opcodes[pc.opcode] = @enumToInt(switch (operand_count) {
                                 0 => Opcode.br_table_void,
                                 1 => switch (label.operandType(0)) {
-                                    false => Opcode.br_table_32,
-                                    true => Opcode.br_table_64,
+                                    .i32 => Opcode.br_table_32,
+                                    .i64 => Opcode.br_table_64,
                                 },
                                 else => unreachable,
                             });
@@ -1186,33 +1188,68 @@ const VirtualMachine = struct {
                             operands[pc.operand] = labels_len;
                             pc.operand += 1;
                         }
-                        operands[pc.operand + 0] = stack_depth - operand_count - label.stack_depth;
+                        operands[pc.operand + 0] = stack.top_offset - label.stack_offset;
                         operands[pc.operand + 1] = label.ref_list;
                         label.ref_list = pc.operand + 1;
                         pc.operand += 3;
                     }
+                    if (unreachable_depth == 0) unreachable_depth += 1;
+                },
+                .@"return" => if (unreachable_depth == 0) {
+                    var result_i = labels[0].type_info.result_count;
+                    while (result_i > 0) {
+                        result_i -= 1;
+                        stack.pop(StackInfo.EntryType.fromBool(
+                            labels[0].type_info.result_types.isSet(result_i),
+                        ));
+                    }
+
+                    opcodes[pc.opcode] = @enumToInt(switch (labels[0].type_info.result_count) {
+                        0 => Opcode.return_void,
+                        1 => switch (StackInfo.EntryType.fromBool(
+                            labels[0].type_info.result_types.isSet(0),
+                        )) {
+                            .i32 => Opcode.return_32,
+                            .i64 => Opcode.return_64,
+                        },
+                        else => unreachable,
+                    });
+                    pc.opcode += 1;
+                    operands[pc.operand + 0] = stack.top_offset - labels[0].stack_offset;
+                    operands[pc.operand + 1] = frame_size;
+                    pc.operand += 2;
+                    unreachable_depth += 1;
                 },
                 .call => {
                     const fn_id = try leb.readULEB128(u32, reader);
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode] = @enumToInt(Opcode.call);
-                        pc.opcode += 1;
-                        operands[pc.operand] = fn_id;
-                        pc.operand += 1;
                         const type_info = &vm.types[
-                            if (fn_id < vm.imports.len)
-                                vm.imports[fn_id].type_idx
-                            else
-                                vm.functions[fn_id - @intCast(u32, vm.imports.len)].type_idx
+                            if (fn_id < vm.imports.len) type_idx: {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.call_import);
+                                operands[pc.operand] = fn_id;
+                                break :type_idx vm.imports[fn_id].type_idx;
+                            } else type_idx: {
+                                const fn_idx = fn_id - @intCast(u32, vm.imports.len);
+                                opcodes[pc.opcode] = @enumToInt(Opcode.call_func);
+                                operands[pc.operand] = fn_idx;
+                                break :type_idx vm.functions[fn_idx].type_idx;
+                            }
                         ];
-                        stack_depth -= type_info.param_count;
+                        pc.opcode += 1;
+                        pc.operand += 1;
+
+                        var param_i = type_info.param_count;
+                        while (param_i > 0) {
+                            param_i -= 1;
+                            stack.pop(StackInfo.EntryType.fromBool(
+                                type_info.param_types.isSet(param_i),
+                            ));
+                        }
                         var result_i: u32 = 0;
                         while (result_i < type_info.result_count) : (result_i += 1)
-                            stack_types.setValue(
-                                stack_depth + result_i,
+                            stack.push(StackInfo.EntryType.fromBool(
                                 type_info.result_types.isSet(result_i),
-                            );
-                        stack_depth += type_info.result_count;
+                            ));
                     }
                 },
                 .call_indirect => {
@@ -1222,47 +1259,42 @@ const VirtualMachine = struct {
                         opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
                         opcodes[pc.opcode + 1] = opcode;
                         pc.opcode += 2;
+
                         const type_info = &vm.types[type_idx];
-                        stack_depth -= type_info.param_count;
+                        var param_i = type_info.param_count;
+                        while (param_i > 0) {
+                            param_i -= 1;
+                            stack.pop(StackInfo.EntryType.fromBool(
+                                type_info.param_types.isSet(param_i),
+                            ));
+                        }
                         var result_i: u32 = 0;
                         while (result_i < type_info.result_count) : (result_i += 1)
-                            stack_types.setValue(
-                                stack_depth + result_i,
+                            stack.push(StackInfo.EntryType.fromBool(
                                 type_info.result_types.isSet(result_i),
-                            );
-                        stack_depth += type_info.result_count;
+                            ));
                     }
-                },
-                .@"return" => if (unreachable_depth == 0) {
-                    const operand_count = labels[0].operandCount();
-                    opcodes[pc.opcode] = @enumToInt(switch (operand_count) {
-                        0 => Opcode.return_void,
-                        1 => switch (labels[0].operandType(0)) {
-                            false => Opcode.return_32,
-                            true => Opcode.return_64,
-                        },
-                        else => unreachable,
-                    });
-                    pc.opcode += 1;
-                    operands[pc.operand + 0] = 2 + stack_depth - labels[0].stack_depth;
-                    stack_depth -= operand_count;
-                    operands[pc.operand + 1] = stack_depth;
-                    pc.operand += 2;
                 },
                 .select,
                 .drop,
                 => |opc| if (unreachable_depth == 0) {
-                    opcodes[pc.opcode] = @enumToInt(switch (stack_types.isSet(stack_depth)) {
-                        false => switch (opc) {
-                            .select => Opcode.select_32,
-                            .drop => Opcode.drop_32,
-                            else => unreachable,
+                    if (opc == .select) stack.pop(.i32);
+                    const operand_type = stack.top();
+                    stack.pop(operand_type);
+                    if (opc == .select) {
+                        stack.pop(operand_type);
+                        stack.push(operand_type);
+                    }
+                    opcodes[pc.opcode] = @enumToInt(switch (opc) {
+                        .select => switch (operand_type) {
+                            .i32 => Opcode.select_32,
+                            .i64 => Opcode.select_64,
                         },
-                        true => switch (opc) {
-                            .select => Opcode.select_64,
-                            .drop => Opcode.drop_64,
-                            else => unreachable,
+                        .drop => switch (operand_type) {
+                            .i32 => Opcode.drop_32,
+                            .i64 => Opcode.drop_64,
                         },
+                        else => unreachable,
                     });
                     pc.opcode += 1;
                 },
@@ -1272,25 +1304,34 @@ const VirtualMachine = struct {
                 => |opc| {
                     const local_idx = try leb.readULEB128(u32, reader);
                     if (unreachable_depth == 0) {
-                        const local_type = function.local_types.isSet(local_idx);
-                        opcodes[pc.opcode] = @enumToInt(switch (local_type) {
-                            false => switch (opc) {
-                                .local_get => Opcode.local_get_32,
-                                .local_set => Opcode.local_set_32,
-                                .local_tee => Opcode.local_tee_32,
-                                else => unreachable,
+                        const local_type = stack.local(local_idx);
+                        opcodes[pc.opcode] = @enumToInt(switch (opc) {
+                            .local_get => switch (local_type) {
+                                .i32 => Opcode.local_get_32,
+                                .i64 => Opcode.local_get_64,
                             },
-                            true => switch (opc) {
-                                .local_get => Opcode.local_get_64,
-                                .local_set => Opcode.local_set_64,
-                                .local_tee => Opcode.local_tee_64,
-                                else => unreachable,
+                            .local_set => switch (local_type) {
+                                .i32 => Opcode.local_set_32,
+                                .i64 => Opcode.local_set_64,
                             },
+                            .local_tee => switch (local_type) {
+                                .i32 => Opcode.local_tee_32,
+                                .i64 => Opcode.local_tee_64,
+                            },
+                            else => unreachable,
                         });
                         pc.opcode += 1;
-                        operands[pc.operand] = initial_stack_depth - local_idx;
+                        operands[pc.operand] = stack.top_offset - stack.offsets[local_idx];
                         pc.operand += 1;
-                        if (opc == .local_get) stack_types.setValue(stack_depth - 1, local_type);
+                        switch (opc) {
+                            .local_get => stack.push(local_type),
+                            .local_set => stack.pop(local_type),
+                            .local_tee => {
+                                stack.pop(local_type);
+                                stack.push(local_type);
+                            },
+                            else => unreachable,
+                        }
                     }
                 },
                 .global_get,
@@ -1298,22 +1339,27 @@ const VirtualMachine = struct {
                 => |opc| {
                     const global_idx = try leb.readULEB128(u32, reader);
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode] = @enumToInt(switch (global_idx) {
-                            0 => switch (opc) {
-                                .global_get => Opcode.global_get_0_32,
-                                .global_set => Opcode.global_set_0_32,
-                                else => unreachable,
+                        const global_type = StackInfo.EntryType.i32; // all globals assumed to be i32
+                        opcodes[pc.opcode] = @enumToInt(switch (opc) {
+                            .global_get => switch (global_idx) {
+                                0 => Opcode.global_get_0_32,
+                                else => Opcode.global_get_32,
                             },
-                            else => switch (opc) {
-                                .global_get => Opcode.global_get_32,
-                                .global_set => Opcode.global_set_32,
-                                else => unreachable,
+                            .global_set => switch (global_idx) {
+                                0 => Opcode.global_set_0_32,
+                                else => Opcode.global_set_32,
                             },
+                            else => unreachable,
                         });
                         pc.opcode += 1;
                         if (global_idx != 0) {
                             operands[pc.operand] = global_idx;
                             pc.operand += 1;
+                        }
+                        switch (opc) {
+                            .global_get => stack.push(global_type),
+                            .global_set => stack.pop(global_type),
+                            else => unreachable,
                         }
                     }
                 },
@@ -1400,11 +1446,11 @@ const VirtualMachine = struct {
                         pc.operand += 2;
                     }
                 },
-                .i32_add => {
+                .i32_add => if (unreachable_depth == 0) {
                     opcodes[pc.opcode] = @enumToInt(Opcode.add_32);
                     pc.opcode += 1;
                 },
-                .i32_and => {
+                .i32_and => if (unreachable_depth == 0) {
                     opcodes[pc.opcode] = @enumToInt(Opcode.and_32);
                     pc.opcode += 1;
                 },
@@ -1446,18 +1492,6 @@ const VirtualMachine = struct {
                     else => unreachable,
                 },
             }
-
-            max_stack_depth = @max(stack_depth, max_stack_depth);
-            switch (@intToEnum(wasm.Opcode, opcode)) {
-                .@"unreachable",
-                .@"return",
-                .br,
-                .br_table,
-                => if (unreachable_depth == 0) {
-                    unreachable_depth = 1;
-                },
-                else => {},
-            }
         }
     }
 
@@ -1473,33 +1507,28 @@ const VirtualMachine = struct {
     }
 
     fn @"return"(vm: *VirtualMachine, comptime Result: type) void {
-        const ret_pc_offset = vm.operands[vm.pc.operand + 0];
-        const stack_adjust = vm.operands[vm.pc.operand + 1];
-
-        vm.pc.opcode = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset]);
-        vm.pc.operand = @intCast(u32, vm.stack[vm.stack_top - ret_pc_offset + 1]);
+        const stack_adjust = vm.operands[vm.pc.operand + 0];
+        const frame_size = vm.operands[vm.pc.operand + 1];
 
         const result = vm.pop(Result);
+
         vm.stack_top -= stack_adjust;
+        vm.pc.operand = vm.pop(u32);
+        vm.pc.opcode = vm.pop(u32);
+
+        vm.stack_top -= frame_size;
         vm.push(Result, result);
     }
 
-    fn call(vm: *VirtualMachine, fn_id: u32) void {
-        if (fn_id < vm.imports.len) {
-            const imp = vm.imports[fn_id];
-            return callImport(vm, imp);
-        }
-        const fn_idx = fn_id - @intCast(u32, vm.imports.len);
-        const func = &vm.functions[fn_idx];
-
+    fn call(vm: *VirtualMachine, func: *const Function) void {
         const type_info = &vm.types[func.type_idx];
-        func_log.debug("enter fn_id: {d}, param_count: {d}, result_count: {d}, locals_count: {d}", .{
-            fn_id, type_info.param_count, type_info.result_count, func.locals_count,
+        func_log.debug("enter fn_id: {d}, param_count: {d}, result_count: {d}, locals_size: {d}", .{
+            func.id, type_info.param_count, type_info.result_count, func.locals_size,
         });
 
         // Push zeroed locals to stack
-        mem.set(u64, vm.stack[vm.stack_top..][0..func.locals_count], 0);
-        vm.stack_top += func.locals_count;
+        mem.set(u32, vm.stack[vm.stack_top..][0..func.locals_size], 0);
+        vm.stack_top += func.locals_size;
 
         vm.push(u32, vm.pc.opcode);
         vm.push(u32, vm.pc.operand);
@@ -1507,7 +1536,7 @@ const VirtualMachine = struct {
         vm.pc = func.entry_pc;
     }
 
-    fn callImport(vm: *VirtualMachine, import: Import) void {
+    fn callImport(vm: *VirtualMachine, import: *const Import) void {
         switch (import.mod) {
             .wasi_snapshot_preview1 => switch (import.name) {
                 .fd_prestat_get => {
@@ -1679,57 +1708,66 @@ const VirtualMachine = struct {
 
     fn push(vm: *VirtualMachine, comptime T: type, value: T) void {
         if (@sizeOf(T) == 0) return;
-        if (check_stack_types) vm.stack_types.setValue(vm.stack_top, switch (@bitSizeOf(T)) {
+        if (check_stack_types) vm.stack_types.setRangeValue(.{
+            .start = vm.stack_top,
+            .end = vm.stack_top + @divExact(@bitSizeOf(T), 32),
+        }, switch (@bitSizeOf(T)) {
             32 => false,
             64 => true,
             else => unreachable,
         });
-        vm.stack[vm.stack_top] = switch (T) {
-            i32 => @bitCast(u32, value),
-            i64 => @bitCast(u64, value),
-            f32 => @bitCast(u32, value),
-            f64 => @bitCast(u64, value),
-            u32 => value,
-            u64 => value,
+        switch (@bitSizeOf(T)) {
+            32 => {
+                vm.stack[vm.stack_top + 0] = @bitCast(u32, value);
+                vm.stack_top += 1;
+            },
+            64 => {
+                vm.stack[vm.stack_top + 0] = @truncate(u32, @bitCast(u64, value) >> 0);
+                vm.stack[vm.stack_top + 1] = @truncate(u32, @bitCast(u64, value) >> 32);
+                vm.stack_top += 2;
+            },
             else => @compileError("bad push type"),
-        };
-        vm.stack_top += 1;
+        }
     }
 
     fn pop(vm: *VirtualMachine, comptime T: type) T {
         if (@sizeOf(T) == 0) return undefined;
-        vm.stack_top -= 1;
         if (check_stack_types and vm.stack_types.isSet(vm.stack_top) != switch (@bitSizeOf(T)) {
             32 => false,
             64 => true,
             else => unreachable,
         }) @panic("stack type check failure");
-        const value = vm.stack[vm.stack_top];
-        return switch (T) {
-            i32 => @bitCast(i32, @truncate(u32, value)),
-            i64 => @bitCast(i64, value),
-            f32 => @bitCast(f32, @truncate(u32, value)),
-            f64 => @bitCast(f64, value),
-            u32 => @truncate(u32, value),
-            u64 => value,
+        switch (@bitSizeOf(T)) {
+            32 => {
+                vm.stack_top -= 1;
+                return @bitCast(T, vm.stack[vm.stack_top + 0]);
+            },
+            64 => {
+                vm.stack_top -= 2;
+                return @bitCast(T, vm.stack[vm.stack_top + 0] | @as(u64, vm.stack[vm.stack_top + 1]) << 32);
+            },
             else => @compileError("bad pop type"),
-        };
+        }
     }
 
     fn run(vm: *VirtualMachine) noreturn {
         const opcodes = vm.opcodes;
         const operands = vm.operands;
         const pc = &vm.pc;
+        var global_0: u32 = vm.globals[0];
+        defer vm.globals[0] = global_0;
         while (true) {
             const op = @intToEnum(Opcode, opcodes[pc.opcode]);
+            cpu_log.debug("stack[{d}:{d}]={x}:{x} pc={x}:{x} op={s}", .{
+                vm.stack_top - 2,
+                vm.stack_top - 1,
+                vm.stack[vm.stack_top - 2],
+                vm.stack[vm.stack_top - 1],
+                pc.opcode,
+                pc.operand,
+                @tagName(op),
+            });
             pc.opcode += 1;
-            if (vm.stack_top > 0) {
-                cpu_log.debug("stack[{d}]={x} pc={d}:{d}, op={s}", .{
-                    vm.stack_top - 1, vm.stack[vm.stack_top - 1], pc.opcode, pc.operand, @tagName(op),
-                });
-            } else {
-                cpu_log.debug("<empty> pc={d}:{d}, op={s}", .{ pc.opcode, pc.operand, @tagName(op) });
-            }
             switch (op) {
                 .@"unreachable" => @panic("unreachable reached"),
                 .br_void => {
@@ -1741,42 +1779,42 @@ const VirtualMachine = struct {
                 .br_64 => {
                     vm.br(u64);
                 },
-                .br_if_nez_void => {
+                .br_nez_void => {
                     if (vm.pop(u32) != 0) {
                         vm.br(void);
                     } else {
                         pc.operand += 3;
                     }
                 },
-                .br_if_nez_32 => {
+                .br_nez_32 => {
                     if (vm.pop(u32) != 0) {
                         vm.br(u32);
                     } else {
                         pc.operand += 3;
                     }
                 },
-                .br_if_nez_64 => {
+                .br_nez_64 => {
                     if (vm.pop(u32) != 0) {
                         vm.br(u64);
                     } else {
                         pc.operand += 3;
                     }
                 },
-                .br_if_eqz_void => {
+                .br_eqz_void => {
                     if (vm.pop(u32) == 0) {
                         vm.br(void);
                     } else {
                         pc.operand += 3;
                     }
                 },
-                .br_if_eqz_32 => {
+                .br_eqz_32 => {
                     if (vm.pop(u32) == 0) {
                         vm.br(u32);
                     } else {
                         pc.operand += 3;
                     }
                 },
-                .br_if_eqz_64 => {
+                .br_eqz_64 => {
                     if (vm.pop(u32) == 0) {
                         vm.br(u64);
                     } else {
@@ -1807,13 +1845,21 @@ const VirtualMachine = struct {
                 .return_64 => {
                     vm.@"return"(u64);
                 },
-                .call => {
-                    const fn_id = operands[pc.operand];
+                .call_import => {
+                    const import_idx = operands[pc.operand];
                     pc.operand += 1;
-                    vm.call(fn_id);
+                    vm.callImport(&vm.imports[import_idx]);
                 },
-                .drop_32, .drop_64 => {
+                .call_func => {
+                    const func_idx = operands[pc.operand];
+                    pc.operand += 1;
+                    vm.call(&vm.functions[func_idx]);
+                },
+                .drop_32 => {
                     vm.stack_top -= 1;
+                },
+                .drop_64 => {
+                    vm.stack_top -= 2;
                 },
                 .select_32 => {
                     const c = vm.pop(u32);
@@ -1835,9 +1881,9 @@ const VirtualMachine = struct {
                     vm.push(u32, @intCast(u32, local.*));
                 },
                 .local_get_64 => {
-                    const local = &vm.stack[vm.stack_top - operands[pc.operand]];
+                    const local = vm.stack[vm.stack_top - operands[pc.operand] ..][0..2];
                     pc.operand += 1;
-                    vm.push(u64, local.*);
+                    vm.push(u64, local[0] | @as(u64, local[1]) << 32);
                 },
                 .local_set_32 => {
                     const local = &vm.stack[vm.stack_top - operands[pc.operand]];
@@ -1845,9 +1891,11 @@ const VirtualMachine = struct {
                     local.* = vm.pop(u32);
                 },
                 .local_set_64 => {
-                    const local = &vm.stack[vm.stack_top - operands[pc.operand]];
+                    const local = vm.stack[vm.stack_top - operands[pc.operand] ..][0..2];
                     pc.operand += 1;
-                    local.* = vm.pop(u64);
+                    const value = vm.pop(u64);
+                    local[0] = @truncate(u32, value >> 0);
+                    local[1] = @truncate(u32, value >> 32);
                 },
                 .local_tee_32 => {
                     const local = &vm.stack[vm.stack_top - operands[pc.operand]];
@@ -1857,14 +1905,15 @@ const VirtualMachine = struct {
                     local.* = vm.stack[vm.stack_top - 1];
                 },
                 .local_tee_64 => {
-                    const local = &vm.stack[vm.stack_top - operands[pc.operand]];
+                    const local = vm.stack[vm.stack_top - operands[pc.operand] ..][0..2];
                     pc.operand += 1;
-                    if (check_stack_types and !vm.stack_types.isSet(vm.stack_top - 1))
+                    if (check_stack_types and !vm.stack_types.isSet(vm.stack_top - 2))
                         @panic("stack type check failure");
-                    local.* = vm.stack[vm.stack_top - 1];
+                    local[0] = vm.stack[vm.stack_top - 2];
+                    local[1] = vm.stack[vm.stack_top - 1];
                 },
                 .global_get_0_32 => {
-                    vm.push(u32, vm.globals[0]);
+                    vm.push(u32, global_0);
                 },
                 .global_get_32 => {
                     const idx = operands[pc.operand];
@@ -1872,7 +1921,7 @@ const VirtualMachine = struct {
                     vm.push(u32, vm.globals[idx]);
                 },
                 .global_set_0_32 => {
-                    vm.globals[0] = vm.pop(u32);
+                    global_0 = vm.pop(u32);
                 },
                 .global_set_32 => {
                     const idx = operands[pc.operand];
@@ -1938,7 +1987,10 @@ const VirtualMachine = struct {
 
                         .call_indirect => {
                             const fn_id = vm.table[vm.pop(u32)];
-                            vm.call(fn_id);
+                            if (fn_id < vm.imports.len)
+                                vm.callImport(&vm.imports[fn_id])
+                            else
+                                vm.call(&vm.functions[fn_id - @intCast(u32, vm.imports.len)]);
                         },
                         .i32_load => {
                             const offset = operands[pc.operand] + vm.pop(u32);
