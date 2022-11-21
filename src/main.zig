@@ -32,8 +32,6 @@ pub fn log(
     _ = level;
 }
 
-const check_stack_types = false;
-
 const max_memory = 3 * 1024 * 1024 * 1024; // 3 GiB
 
 pub export fn main(argc: c_int, argv: [*c][*:0]u8) c_int {
@@ -316,47 +314,28 @@ fn main2(args: []const [*:0]const u8) !void {
                 max_frame_size = @max(params_size + func.locals_size, max_frame_size);
 
                 func.entry_pc = pc;
-                decode_log.debug("decoding func id {}", .{func.id});
+                decode_log.debug("decoding func id {d} with pc {d}:{d}", .{ func.id, pc.opcode, pc.operand });
                 try vm.decodeCode(module_reader, type_info, &pc, &stack);
             }
 
             var opcode_counts = [1]u64{0} ** 0x100;
-            var wasm_opcode_counts = [1]u64{0} ** 0x100;
-            var wasm_prefixed_opcode_counts = [1]u64{0} ** 0x100;
             var prefix: ?Opcode = null;
             for (vm.opcodes[0..pc.opcode]) |opcode| {
                 if (prefix) |pre| {
                     switch (pre) {
                         else => unreachable,
-                        .wasm => wasm_opcode_counts[opcode] += 1,
-                        .wasm_prefixed => wasm_prefixed_opcode_counts[opcode] += 1,
                     }
                     prefix = null;
                 } else switch (@intToEnum(Opcode, opcode)) {
                     else => opcode_counts[opcode] += 1,
-                    .wasm, .wasm_prefixed => |opc| prefix = opc,
                 }
             }
 
             stats_log.debug("{} opcodes", .{pc.opcode});
             stats_log.debug("{} operands", .{pc.operand});
             for (opcode_counts) |opcode_count, opcode| {
-                if (opcode_count == 0) continue;
+                if (opcode > @enumToInt(Opcode.last)) continue;
                 stats_log.debug("{} {s}", .{ opcode_count, @tagName(@intToEnum(Opcode, opcode)) });
-            }
-            for (wasm_opcode_counts) |wasm_opcode_count, wasm_opcode| {
-                if (wasm_opcode_count == 0) continue;
-                stats_log.debug("{} {s}", .{
-                    wasm_opcode_count,
-                    @tagName(@intToEnum(wasm.Opcode, wasm_opcode)),
-                });
-            }
-            for (wasm_prefixed_opcode_counts) |wasm_prefixed_opcode_count, wasm_prefixed_opcode| {
-                if (wasm_prefixed_opcode_count == 0) continue;
-                stats_log.debug("{} {s}", .{
-                    wasm_prefixed_opcode_count,
-                    @tagName(@intToEnum(wasm.PrefixedOpcode, wasm_prefixed_opcode)),
-                });
             }
             stats_log.debug("{} zero offsets", .{offset_counts[0]});
             stats_log.debug("{} non-zero offsets", .{offset_counts[1]});
@@ -388,10 +367,6 @@ fn main2(args: []const [*:0]const u8) !void {
     }
 
     vm.stack = try arena.alloc(u32, 10000000);
-    if (check_stack_types) {
-        vm.stack_types = .{};
-        try vm.stack_types.resize(arena, 10000000, false);
-    }
     vm.stack_top = 0;
     vm.call(&vm.functions[start_fn_idx - @intCast(u32, vm.imports.len)]);
     vm.run();
@@ -416,6 +391,7 @@ const Opcode = enum {
     return_64,
     call_import,
     call_func,
+    call_indirect,
     drop_32,
     drop_64,
     select_32,
@@ -430,12 +406,160 @@ const Opcode = enum {
     global_get_32,
     global_set_0_32,
     global_set_32,
+    load_0_8,
+    load_8,
+    load_0_16,
+    load_16,
+    load_0_32,
+    load_32,
+    load_0_64,
+    load_64,
+    store_0_8,
+    store_8,
+    store_0_16,
+    store_16,
+    store_0_32,
+    store_32,
+    store_0_64,
+    store_64,
+    mem_size,
+    mem_grow,
+    const_0_32,
+    const_0_64,
+    const_1_32,
+    const_1_64,
     const_32,
     const_64,
+    const_umax_32,
+    const_umax_64,
+    eqz_32,
+    eq_32,
+    ne_32,
+    slt_32,
+    ult_32,
+    sgt_32,
+    ugt_32,
+    sle_32,
+    ule_32,
+    sge_32,
+    uge_32,
+    eqz_64,
+    eq_64,
+    ne_64,
+    slt_64,
+    ult_64,
+    sgt_64,
+    ugt_64,
+    sle_64,
+    ule_64,
+    sge_64,
+    uge_64,
+    feq_32,
+    fne_32,
+    flt_32,
+    fgt_32,
+    fle_32,
+    fge_32,
+    feq_64,
+    fne_64,
+    flt_64,
+    fgt_64,
+    fle_64,
+    fge_64,
+    clz_32,
+    ctz_32,
+    popcnt_32,
     add_32,
+    sub_32,
+    mul_32,
+    sdiv_32,
+    udiv_32,
+    srem_32,
+    urem_32,
     and_32,
-    wasm,
-    wasm_prefixed,
+    or_32,
+    xor_32,
+    shl_32,
+    ashr_32,
+    lshr_32,
+    rol_32,
+    ror_32,
+    clz_64,
+    ctz_64,
+    popcnt_64,
+    add_64,
+    sub_64,
+    mul_64,
+    sdiv_64,
+    udiv_64,
+    srem_64,
+    urem_64,
+    and_64,
+    or_64,
+    xor_64,
+    shl_64,
+    ashr_64,
+    lshr_64,
+    rol_64,
+    ror_64,
+    fabs_32,
+    fneg_32,
+    ceil_32,
+    floor_32,
+    trunc_32,
+    nearest_32,
+    sqrt_32,
+    fadd_32,
+    fsub_32,
+    fmul_32,
+    fdiv_32,
+    fmin_32,
+    fmax_32,
+    copysign_32,
+    fabs_64,
+    fneg_64,
+    ceil_64,
+    floor_64,
+    trunc_64,
+    nearest_64,
+    sqrt_64,
+    fadd_64,
+    fsub_64,
+    fmul_64,
+    fdiv_64,
+    fmin_64,
+    fmax_64,
+    copysign_64,
+    ftos_32_32,
+    ftou_32_32,
+    ftos_32_64,
+    ftou_32_64,
+    sext_64_32,
+    ftos_64_32,
+    ftou_64_32,
+    ftos_64_64,
+    ftou_64_64,
+    stof_32_32,
+    utof_32_32,
+    stof_32_64,
+    utof_32_64,
+    ftof_32_64,
+    stof_64_32,
+    utof_64_32,
+    stof_64_64,
+    utof_64_64,
+    ftof_64_32,
+    sext8_32,
+    sext16_32,
+    sext8_64,
+    sext16_64,
+    sext32_64,
+    memcpy,
+    memset,
+
+    const wrap_32_64 = Opcode.drop_32;
+    const zext_64_32 = Opcode.const_0_32;
+    const last = Opcode.memset;
 };
 
 var offset_counts = [2]u64{ 0, 0 };
@@ -580,7 +704,6 @@ const StackInfo = struct {
 
 const VirtualMachine = struct {
     stack: []u32,
-    stack_types: if (check_stack_types) std.DynamicBitSetUnmanaged else void,
     /// Points to one after the last stack item.
     stack_top: u32,
     pc: ProgramCounter,
@@ -620,6 +743,8 @@ const VirtualMachine = struct {
             .type_info = func_type_info,
         };
 
+        var state: enum { default, bool_not } = .default;
+
         while (true) {
             assert(stack.top_index >= labels[0].stack_index);
             assert(stack.top_offset >= labels[0].stack_offset);
@@ -628,15 +753,19 @@ const VirtualMachine = struct {
                 @intCast(u8, try leb.readULEB128(u32, reader))
             else
                 undefined;
-            decode_log.debug("stack.top_index = {}, stack.top_offset = {}, opcode = {s}, prefixed_opcode = {s}", .{
-                stack.top_index,
-                stack.top_offset,
-                @tagName(@intToEnum(wasm.Opcode, opcode)),
-                if (@intToEnum(wasm.Opcode, opcode) == .prefixed)
-                    @tagName(@intToEnum(wasm.PrefixedOpcode, prefixed_opcode))
-                else
-                    "(none)",
-            });
+
+            //decode_log.debug("stack.top_index = {}, stack.top_offset = {}, opcode = {s}, prefixed_opcode = {s}", .{
+            //    stack.top_index,
+            //    stack.top_offset,
+            //    @tagName(@intToEnum(wasm.Opcode, opcode)),
+            //    if (@intToEnum(wasm.Opcode, opcode) == .prefixed)
+            //        @tagName(@intToEnum(wasm.PrefixedOpcode, prefixed_opcode))
+            //    else
+            //        "(none)",
+            //});
+
+            decode_log.debug("decodeCode opcode=0x{x} pc={d}:{d}", .{ opcode, pc.opcode, pc.operand });
+            const old_pc = pc.*;
 
             if (unreachable_depth == 0) switch (@intToEnum(wasm.Opcode, opcode)) {
                 .@"unreachable",
@@ -951,7 +1080,6 @@ const VirtualMachine = struct {
 
                 _ => unreachable,
             };
-
             switch (@intToEnum(wasm.Opcode, opcode)) {
                 .@"unreachable" => if (unreachable_depth == 0) {
                     opcodes[pc.opcode] = @enumToInt(Opcode.@"unreachable");
@@ -1005,7 +1133,12 @@ const VirtualMachine = struct {
                                 label.extra = .{ .loop_pc = pc.* };
                             },
                             .@"if" => {
-                                opcodes[pc.opcode] = @enumToInt(Opcode.br_eqz_void);
+                                const bool_not = state == .bool_not;
+                                if (bool_not) pc.opcode -= 1;
+                                opcodes[pc.opcode] = @enumToInt(if (bool_not)
+                                    Opcode.br_nez_void
+                                else
+                                    Opcode.br_eqz_void);
                                 pc.opcode += 1;
                                 operands[pc.operand] = 0;
                                 label.extra = .{ .else_ref = pc.operand + 1 };
@@ -1128,6 +1261,8 @@ const VirtualMachine = struct {
                             stack.pop(label.operandType(operand_i));
                         }
 
+                        const bool_not = state == .bool_not and opc == .br_if;
+                        if (bool_not) pc.opcode -= 1;
                         opcodes[pc.opcode] = @enumToInt(switch (opc) {
                             .br => switch (operand_count) {
                                 0 => Opcode.br_void,
@@ -1138,10 +1273,10 @@ const VirtualMachine = struct {
                                 else => unreachable,
                             },
                             .br_if => switch (label.type_info.result_count) {
-                                0 => Opcode.br_nez_void,
+                                0 => if (bool_not) Opcode.br_eqz_void else Opcode.br_nez_void,
                                 1 => switch (label.operandType(0)) {
-                                    .i32 => Opcode.br_nez_32,
-                                    .i64 => Opcode.br_nez_64,
+                                    .i32 => if (bool_not) Opcode.br_eqz_32 else Opcode.br_nez_32,
+                                    .i64 => if (bool_not) Opcode.br_eqz_64 else Opcode.br_nez_64,
                                 },
                                 else => unreachable,
                             },
@@ -1225,18 +1360,19 @@ const VirtualMachine = struct {
                     if (unreachable_depth == 0) {
                         const type_info = &vm.types[
                             if (fn_id < vm.imports.len) type_idx: {
-                                opcodes[pc.opcode] = @enumToInt(Opcode.call_import);
-                                operands[pc.operand] = fn_id;
+                                opcodes[pc.opcode + 0] = @enumToInt(Opcode.call_import);
+                                opcodes[pc.opcode + 1] = @intCast(u8, fn_id);
+                                pc.opcode += 2;
                                 break :type_idx vm.imports[fn_id].type_idx;
                             } else type_idx: {
                                 const fn_idx = fn_id - @intCast(u32, vm.imports.len);
                                 opcodes[pc.opcode] = @enumToInt(Opcode.call_func);
+                                pc.opcode += 1;
                                 operands[pc.operand] = fn_idx;
+                                pc.operand += 1;
                                 break :type_idx vm.functions[fn_idx].type_idx;
                             }
                         ];
-                        pc.opcode += 1;
-                        pc.operand += 1;
 
                         var param_i = type_info.param_count;
                         while (param_i > 0) {
@@ -1256,9 +1392,8 @@ const VirtualMachine = struct {
                     const type_idx = try leb.readULEB128(u32, reader);
                     assert(try leb.readULEB128(u32, reader) == 0);
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                        opcodes[pc.opcode + 1] = opcode;
-                        pc.opcode += 2;
+                        opcodes[pc.opcode] = @enumToInt(Opcode.call_indirect);
+                        pc.opcode += 1;
 
                         const type_info = &vm.types[type_idx];
                         var param_i = type_info.param_count;
@@ -1386,111 +1521,304 @@ const VirtualMachine = struct {
                 .i64_store8,
                 .i64_store16,
                 .i64_store32,
-                => {
+                => |opc| {
                     const alignment = try leb.readULEB128(u32, reader);
                     const offset = try leb.readULEB128(u32, reader);
                     _ = alignment;
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                        opcodes[pc.opcode + 1] = opcode;
-                        pc.opcode += 2;
-                        operands[pc.operand] = offset;
-                        offset_counts[@boolToInt(operands[pc.operand] != 0)] += 1;
-                        max_offset = @max(operands[pc.operand], max_offset);
-                        pc.operand += 1;
+                        switch (opc) {
+                            else => {},
+                            .i64_store8, .i64_store16, .i64_store32 => {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.drop_32);
+                                pc.opcode += 1;
+                            },
+                        }
+                        opcodes[pc.opcode] = @enumToInt(switch (opc) {
+                            .i32_load8_s, .i32_load8_u, .i64_load8_s, .i64_load8_u => switch (offset) {
+                                0 => Opcode.load_0_8,
+                                else => Opcode.load_8,
+                            },
+                            .i32_load16_s, .i32_load16_u, .i64_load16_s, .i64_load16_u => switch (offset) {
+                                0 => Opcode.load_0_16,
+                                else => Opcode.load_16,
+                            },
+                            .i32_load, .f32_load, .i64_load32_s, .i64_load32_u => switch (offset) {
+                                0 => Opcode.load_0_32,
+                                else => Opcode.load_32,
+                            },
+                            .i64_load, .f64_load => switch (offset) {
+                                0 => Opcode.load_0_64,
+                                else => Opcode.load_64,
+                            },
+                            .i32_store8, .i64_store8 => switch (offset) {
+                                0 => Opcode.store_0_8,
+                                else => Opcode.store_8,
+                            },
+                            .i32_store16, .i64_store16 => switch (offset) {
+                                0 => Opcode.store_0_16,
+                                else => Opcode.store_16,
+                            },
+                            .i32_store, .f32_store, .i64_store32 => switch (offset) {
+                                0 => Opcode.store_0_32,
+                                else => Opcode.store_32,
+                            },
+                            .i64_store, .f64_store => switch (offset) {
+                                0 => Opcode.store_0_64,
+                                else => Opcode.store_64,
+                            },
+                            else => unreachable,
+                        });
+                        pc.opcode += 1;
+                        switch (offset) {
+                            0 => {},
+                            else => {
+                                operands[pc.operand] = offset;
+                                pc.operand += 1;
+                            },
+                        }
+                        switch (opc) {
+                            else => {},
+                            .i32_load8_s, .i64_load8_s => {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.sext8_32);
+                                pc.opcode += 1;
+                            },
+                            .i32_load16_s, .i64_load16_s => {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.sext16_32);
+                                pc.opcode += 1;
+                            },
+                        }
+                        switch (opc) {
+                            else => {},
+                            .i64_load8_s, .i64_load16_s, .i64_load32_s => {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.sext_64_32);
+                                pc.opcode += 1;
+                            },
+                            .i64_load8_u, .i64_load16_u, .i64_load32_u => {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.zext_64_32);
+                                pc.opcode += 1;
+                            },
+                        }
+
+                        offset_counts[@boolToInt(offset != 0)] += 1;
+                        max_offset = @max(offset, max_offset);
                     }
                 },
-                .memory_size, .memory_grow => {
+                .memory_size,
+                .memory_grow,
+                => |opc| {
                     assert(try reader.readByte() == 0);
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                        opcodes[pc.opcode + 1] = opcode;
-                        pc.opcode += 2;
-                    }
-                },
-                .i32_const => {
-                    const x = @bitCast(u32, try leb.readILEB128(i32, reader));
-                    if (unreachable_depth == 0) {
-                        opcodes[pc.opcode] = @enumToInt(Opcode.const_32);
+                        opcodes[pc.opcode] = @enumToInt(switch (opc) {
+                            .memory_size => Opcode.mem_size,
+                            .memory_grow => Opcode.mem_grow,
+                            else => unreachable,
+                        });
                         pc.opcode += 1;
-                        operands[pc.operand] = x;
-                        pc.operand += 1;
                     }
                 },
-                .i64_const => {
-                    const x = @bitCast(u64, try leb.readILEB128(i64, reader));
+                .i32_const,
+                .f32_const,
+                => |opc| {
+                    const value = switch (opc) {
+                        .i32_const => @bitCast(u32, try leb.readILEB128(i32, reader)),
+                        .f32_const => try reader.readIntLittle(u32),
+                        else => unreachable,
+                    };
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode] = @enumToInt(Opcode.const_64);
+                        switch (value) {
+                            0 => opcodes[pc.opcode] = @enumToInt(Opcode.const_0_32),
+                            1 => opcodes[pc.opcode] = @enumToInt(Opcode.const_1_32),
+                            else => {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.const_32);
+                                operands[pc.operand] = value;
+                                pc.operand += 1;
+                            },
+                            math.maxInt(u32) => opcodes[pc.opcode] = @enumToInt(Opcode.const_umax_32),
+                        }
                         pc.opcode += 1;
-                        operands[pc.operand + 0] = @truncate(u32, x);
-                        operands[pc.operand + 1] = @truncate(u32, x >> 32);
-                        pc.operand += 2;
                     }
                 },
-                .f32_const => {
-                    const x = try reader.readIntLittle(u32);
+                .i64_const,
+                .f64_const,
+                => |opc| {
+                    const value = switch (opc) {
+                        .i64_const => @bitCast(u64, try leb.readILEB128(i64, reader)),
+                        .f64_const => try reader.readIntLittle(u64),
+                        else => unreachable,
+                    };
                     if (unreachable_depth == 0) {
-                        opcodes[pc.opcode] = @enumToInt(Opcode.const_32);
+                        switch (value) {
+                            0 => opcodes[pc.opcode] = @enumToInt(Opcode.const_0_64),
+                            1 => opcodes[pc.opcode] = @enumToInt(Opcode.const_1_64),
+                            else => {
+                                opcodes[pc.opcode] = @enumToInt(Opcode.const_64);
+                                operands[pc.operand + 0] = @truncate(u32, value >> 0);
+                                operands[pc.operand + 1] = @truncate(u32, value >> 32);
+                                pc.operand += 2;
+                            },
+                            math.maxInt(u64) => opcodes[pc.opcode] = @enumToInt(Opcode.const_umax_64),
+                        }
                         pc.opcode += 1;
-                        operands[pc.operand] = x;
-                        pc.operand += 1;
                     }
                 },
-                .f64_const => {
-                    const x = try reader.readIntLittle(u64);
-                    if (unreachable_depth == 0) {
-                        opcodes[pc.opcode] = @enumToInt(Opcode.const_64);
-                        pc.opcode += 1;
-                        operands[pc.operand + 0] = @truncate(u32, x);
-                        operands[pc.operand + 1] = @truncate(u32, x >> 32);
-                        pc.operand += 2;
-                    }
-                },
-                .i32_add => if (unreachable_depth == 0) {
-                    opcodes[pc.opcode] = @enumToInt(Opcode.add_32);
+                else => |opc| if (unreachable_depth == 0) {
+                    opcodes[pc.opcode] = @enumToInt(switch (opc) {
+                        .i32_eqz => Opcode.eqz_32,
+                        .i32_eq => Opcode.eq_32,
+                        .i32_ne => Opcode.ne_32,
+                        .i32_lt_s => Opcode.slt_32,
+                        .i32_lt_u => Opcode.ult_32,
+                        .i32_gt_s => Opcode.sgt_32,
+                        .i32_gt_u => Opcode.ugt_32,
+                        .i32_le_s => Opcode.sle_32,
+                        .i32_le_u => Opcode.ule_32,
+                        .i32_ge_s => Opcode.sge_32,
+                        .i32_ge_u => Opcode.uge_32,
+                        .i64_eqz => Opcode.eqz_64,
+                        .i64_eq => Opcode.eq_64,
+                        .i64_ne => Opcode.ne_64,
+                        .i64_lt_s => Opcode.slt_64,
+                        .i64_lt_u => Opcode.ult_64,
+                        .i64_gt_s => Opcode.sgt_64,
+                        .i64_gt_u => Opcode.ugt_64,
+                        .i64_le_s => Opcode.sle_64,
+                        .i64_le_u => Opcode.ule_64,
+                        .i64_ge_s => Opcode.sge_64,
+                        .i64_ge_u => Opcode.uge_64,
+                        .f32_eq => Opcode.feq_32,
+                        .f32_ne => Opcode.fne_32,
+                        .f32_lt => Opcode.flt_32,
+                        .f32_gt => Opcode.fgt_32,
+                        .f32_le => Opcode.fle_32,
+                        .f32_ge => Opcode.fge_32,
+                        .f64_eq => Opcode.feq_64,
+                        .f64_ne => Opcode.fne_64,
+                        .f64_lt => Opcode.flt_64,
+                        .f64_gt => Opcode.fgt_64,
+                        .f64_le => Opcode.fle_64,
+                        .f64_ge => Opcode.fge_64,
+                        .i32_clz => Opcode.clz_32,
+                        .i32_ctz => Opcode.ctz_32,
+                        .i32_popcnt => Opcode.popcnt_32,
+                        .i32_add => Opcode.add_32,
+                        .i32_sub => Opcode.sub_32,
+                        .i32_mul => Opcode.mul_32,
+                        .i32_div_s => Opcode.sdiv_32,
+                        .i32_div_u => Opcode.udiv_32,
+                        .i32_rem_s => Opcode.srem_32,
+                        .i32_rem_u => Opcode.urem_32,
+                        .i32_and => Opcode.and_32,
+                        .i32_or => Opcode.or_32,
+                        .i32_xor => Opcode.xor_32,
+                        .i32_shl => Opcode.shl_32,
+                        .i32_shr_s => Opcode.ashr_32,
+                        .i32_shr_u => Opcode.lshr_32,
+                        .i32_rotl => Opcode.rol_32,
+                        .i32_rotr => Opcode.ror_32,
+                        .i64_clz => Opcode.clz_64,
+                        .i64_ctz => Opcode.ctz_64,
+                        .i64_popcnt => Opcode.popcnt_64,
+                        .i64_add => Opcode.add_64,
+                        .i64_sub => Opcode.sub_64,
+                        .i64_mul => Opcode.mul_64,
+                        .i64_div_s => Opcode.sdiv_64,
+                        .i64_div_u => Opcode.udiv_64,
+                        .i64_rem_s => Opcode.srem_64,
+                        .i64_rem_u => Opcode.urem_64,
+                        .i64_and => Opcode.and_64,
+                        .i64_or => Opcode.or_64,
+                        .i64_xor => Opcode.xor_64,
+                        .i64_shl => Opcode.shl_64,
+                        .i64_shr_s => Opcode.ashr_64,
+                        .i64_shr_u => Opcode.lshr_64,
+                        .i64_rotl => Opcode.rol_64,
+                        .i64_rotr => Opcode.ror_64,
+                        .f32_abs => Opcode.fabs_32,
+                        .f32_neg => Opcode.fneg_32,
+                        .f32_ceil => Opcode.ceil_32,
+                        .f32_floor => Opcode.floor_32,
+                        .f32_trunc => Opcode.trunc_32,
+                        .f32_nearest => Opcode.nearest_32,
+                        .f32_sqrt => Opcode.sqrt_32,
+                        .f32_add => Opcode.fadd_32,
+                        .f32_sub => Opcode.fsub_32,
+                        .f32_mul => Opcode.fmul_32,
+                        .f32_div => Opcode.fdiv_32,
+                        .f32_min => Opcode.fmin_32,
+                        .f32_max => Opcode.fmax_32,
+                        .f32_copysign => Opcode.copysign_32,
+                        .f64_abs => Opcode.fabs_64,
+                        .f64_neg => Opcode.fneg_64,
+                        .f64_ceil => Opcode.ceil_64,
+                        .f64_floor => Opcode.floor_64,
+                        .f64_trunc => Opcode.trunc_64,
+                        .f64_nearest => Opcode.nearest_64,
+                        .f64_sqrt => Opcode.sqrt_64,
+                        .f64_add => Opcode.fadd_64,
+                        .f64_sub => Opcode.fsub_64,
+                        .f64_mul => Opcode.fmul_64,
+                        .f64_div => Opcode.fdiv_64,
+                        .f64_min => Opcode.fmin_64,
+                        .f64_max => Opcode.fmax_64,
+                        .f64_copysign => Opcode.copysign_64,
+                        .i32_wrap_i64 => Opcode.wrap_32_64,
+                        .i32_trunc_f32_s => Opcode.ftos_32_32,
+                        .i32_trunc_f32_u => Opcode.ftou_32_32,
+                        .i32_trunc_f64_s => Opcode.ftos_32_64,
+                        .i32_trunc_f64_u => Opcode.ftou_32_64,
+                        .i64_extend_i32_s => Opcode.sext_64_32,
+                        .i64_extend_i32_u => Opcode.zext_64_32,
+                        .i64_trunc_f32_s => Opcode.ftos_64_32,
+                        .i64_trunc_f32_u => Opcode.ftou_64_32,
+                        .i64_trunc_f64_s => Opcode.ftos_64_64,
+                        .i64_trunc_f64_u => Opcode.ftou_64_64,
+                        .f32_convert_i32_s => Opcode.stof_32_32,
+                        .f32_convert_i32_u => Opcode.utof_32_32,
+                        .f32_convert_i64_s => Opcode.stof_32_64,
+                        .f32_convert_i64_u => Opcode.utof_32_64,
+                        .f32_demote_f64 => Opcode.ftof_32_64,
+                        .f64_convert_i32_s => Opcode.stof_64_32,
+                        .f64_convert_i32_u => Opcode.utof_64_32,
+                        .f64_convert_i64_s => Opcode.stof_64_64,
+                        .f64_convert_i64_u => Opcode.utof_64_64,
+                        .f64_promote_f32 => Opcode.ftof_64_32,
+                        .i32_extend8_s => Opcode.sext8_32,
+                        .i32_extend16_s => Opcode.sext16_32,
+                        .i64_extend8_s => Opcode.sext8_64,
+                        .i64_extend16_s => Opcode.sext16_64,
+                        .i64_extend32_s => Opcode.sext32_64,
+                        else => unreachable,
+                    });
                     pc.opcode += 1;
-                },
-                .i32_and => if (unreachable_depth == 0) {
-                    opcodes[pc.opcode] = @enumToInt(Opcode.and_32);
-                    pc.opcode += 1;
-                },
-                else => if (unreachable_depth == 0) {
-                    opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm);
-                    opcodes[pc.opcode + 1] = opcode;
-                    pc.opcode += 2;
                 },
                 .prefixed => switch (@intToEnum(wasm.PrefixedOpcode, prefixed_opcode)) {
-                    .i32_trunc_sat_f32_s,
-                    .i32_trunc_sat_f32_u,
-                    .i32_trunc_sat_f64_s,
-                    .i32_trunc_sat_f64_u,
-                    .i64_trunc_sat_f32_s,
-                    .i64_trunc_sat_f32_u,
-                    .i64_trunc_sat_f64_s,
-                    .i64_trunc_sat_f64_u,
-                    => if (unreachable_depth == 0) {
-                        opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm_prefixed);
-                        opcodes[pc.opcode + 1] = prefixed_opcode;
-                        pc.opcode += 2;
-                    },
                     .memory_copy => {
                         assert(try reader.readByte() == 0 and try reader.readByte() == 0);
                         if (unreachable_depth == 0) {
-                            opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm_prefixed);
-                            opcodes[pc.opcode + 1] = prefixed_opcode;
-                            pc.opcode += 2;
+                            opcodes[pc.opcode] = @enumToInt(Opcode.memcpy);
+                            pc.opcode += 1;
                         }
                     },
                     .memory_fill => {
                         assert(try reader.readByte() == 0);
                         if (unreachable_depth == 0) {
-                            opcodes[pc.opcode + 0] = @enumToInt(Opcode.wasm_prefixed);
-                            opcodes[pc.opcode + 1] = prefixed_opcode;
-                            pc.opcode += 2;
+                            opcodes[pc.opcode] = @enumToInt(Opcode.memset);
+                            pc.opcode += 1;
                         }
                     },
                     else => unreachable,
                 },
+            }
+            state = switch (@intToEnum(wasm.Opcode, opcode)) {
+                else => .default,
+                .i32_eqz => .bool_not,
+            };
+
+            for (opcodes[old_pc.opcode..pc.opcode]) |o, i| {
+                decode_log.debug("decoded opcode[{d}] = {d}", .{ old_pc.opcode + i, o });
+            }
+            for (operands[old_pc.operand..pc.operand]) |o, i| {
+                decode_log.debug("decoded operand[{d}] = {d}", .{ old_pc.operand + i, o });
             }
         }
     }
@@ -1708,14 +2036,6 @@ const VirtualMachine = struct {
 
     fn push(vm: *VirtualMachine, comptime T: type, value: T) void {
         if (@sizeOf(T) == 0) return;
-        if (check_stack_types) vm.stack_types.setRangeValue(.{
-            .start = vm.stack_top,
-            .end = vm.stack_top + @divExact(@bitSizeOf(T), 32),
-        }, switch (@bitSizeOf(T)) {
-            32 => false,
-            64 => true,
-            else => unreachable,
-        });
         switch (@bitSizeOf(T)) {
             32 => {
                 vm.stack[vm.stack_top + 0] = @bitCast(u32, value);
@@ -1732,11 +2052,6 @@ const VirtualMachine = struct {
 
     fn pop(vm: *VirtualMachine, comptime T: type) T {
         if (@sizeOf(T) == 0) return undefined;
-        if (check_stack_types and vm.stack_types.isSet(vm.stack_top) != switch (@bitSizeOf(T)) {
-            32 => false,
-            64 => true,
-            else => unreachable,
-        }) @panic("stack type check failure");
         switch (@bitSizeOf(T)) {
             32 => {
                 vm.stack_top -= 1;
@@ -1758,15 +2073,16 @@ const VirtualMachine = struct {
         defer vm.globals[0] = global_0;
         while (true) {
             const op = @intToEnum(Opcode, opcodes[pc.opcode]);
-            cpu_log.debug("stack[{d}:{d}]={x}:{x} pc={x}:{x} op={s}", .{
+            cpu_log.debug("stack[{d}:{d}]={x}:{x} pc={x}:{x} op={d}", .{
                 vm.stack_top - 2,
                 vm.stack_top - 1,
                 vm.stack[vm.stack_top - 2],
                 vm.stack[vm.stack_top - 1],
                 pc.opcode,
                 pc.operand,
-                @tagName(op),
+                @enumToInt(op),
             });
+            cpu_log.debug("op={s}", .{@tagName(op)});
             pc.opcode += 1;
             switch (op) {
                 .@"unreachable" => @panic("unreachable reached"),
@@ -1846,14 +2162,21 @@ const VirtualMachine = struct {
                     vm.@"return"(u64);
                 },
                 .call_import => {
-                    const import_idx = operands[pc.operand];
-                    pc.operand += 1;
+                    const import_idx = opcodes[pc.opcode];
+                    pc.opcode += 1;
                     vm.callImport(&vm.imports[import_idx]);
                 },
                 .call_func => {
                     const func_idx = operands[pc.operand];
                     pc.operand += 1;
                     vm.call(&vm.functions[func_idx]);
+                },
+                .call_indirect => {
+                    const fn_id = vm.table[vm.pop(u32)];
+                    if (fn_id < vm.imports.len)
+                        vm.callImport(&vm.imports[fn_id])
+                    else
+                        vm.call(&vm.functions[fn_id - @intCast(u32, vm.imports.len)]);
                 },
                 .drop_32 => {
                     vm.stack_top -= 1;
@@ -1900,15 +2223,11 @@ const VirtualMachine = struct {
                 .local_tee_32 => {
                     const local = &vm.stack[vm.stack_top - operands[pc.operand]];
                     pc.operand += 1;
-                    if (check_stack_types and vm.stack_types.isSet(vm.stack_top - 1))
-                        @panic("stack type check failure");
                     local.* = vm.stack[vm.stack_top - 1];
                 },
                 .local_tee_64 => {
                     const local = vm.stack[vm.stack_top - operands[pc.operand] ..][0..2];
                     pc.operand += 1;
-                    if (check_stack_types and !vm.stack_types.isSet(vm.stack_top - 2))
-                        @panic("stack type check failure");
                     local[0] = vm.stack[vm.stack_top - 2];
                     local[1] = vm.stack[vm.stack_top - 1];
                 },
@@ -1928,6 +2247,113 @@ const VirtualMachine = struct {
                     pc.operand += 1;
                     vm.globals[idx] = vm.pop(u32);
                 },
+                .load_0_8 => {
+                    const address = vm.pop(u32);
+                    vm.push(u32, vm.memory[address]);
+                },
+                .load_8 => {
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    vm.push(u32, vm.memory[address]);
+                },
+                .load_0_16 => {
+                    const address = vm.pop(u32);
+                    vm.push(u32, mem.readIntLittle(u16, vm.memory[address..][0..2]));
+                },
+                .load_16 => {
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    vm.push(u32, mem.readIntLittle(u16, vm.memory[address..][0..2]));
+                },
+                .load_0_32 => {
+                    const address = vm.pop(u32);
+                    vm.push(u32, mem.readIntLittle(u32, vm.memory[address..][0..4]));
+                },
+                .load_32 => {
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    vm.push(u32, mem.readIntLittle(u32, vm.memory[address..][0..4]));
+                },
+                .load_0_64 => {
+                    const address = vm.pop(u32);
+                    vm.push(u64, mem.readIntLittle(u64, vm.memory[address..][0..8]));
+                },
+                .load_64 => {
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    vm.push(u64, mem.readIntLittle(u64, vm.memory[address..][0..8]));
+                },
+                .store_0_8 => {
+                    const value = @truncate(u8, vm.pop(u32));
+                    const address = vm.pop(u32);
+                    vm.memory[address] = value;
+                },
+                .store_8 => {
+                    const value = @truncate(u8, vm.pop(u32));
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    vm.memory[address] = value;
+                },
+                .store_0_16 => {
+                    const value = @truncate(u16, vm.pop(u32));
+                    const address = vm.pop(u32);
+                    mem.writeIntLittle(u16, vm.memory[address..][0..2], value);
+                },
+                .store_16 => {
+                    const value = @truncate(u16, vm.pop(u32));
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    mem.writeIntLittle(u16, vm.memory[address..][0..2], value);
+                },
+                .store_0_32 => {
+                    const value = vm.pop(u32);
+                    const address = vm.pop(u32);
+                    mem.writeIntLittle(u32, vm.memory[address..][0..4], value);
+                },
+                .store_32 => {
+                    const value = vm.pop(u32);
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    mem.writeIntLittle(u32, vm.memory[address..][0..4], value);
+                },
+                .store_0_64 => {
+                    const value = vm.pop(u64);
+                    const address = vm.pop(u32);
+                    mem.writeIntLittle(u64, vm.memory[address..][0..8], value);
+                },
+                .store_64 => {
+                    const value = vm.pop(u64);
+                    const address = vm.pop(u32) + operands[pc.operand];
+                    pc.operand += 1;
+                    mem.writeIntLittle(u64, vm.memory[address..][0..8], value);
+                },
+                .mem_size => {
+                    const page_count = @intCast(u32, vm.memory_len / wasm.page_size);
+                    vm.push(u32, page_count);
+                },
+                .mem_grow => {
+                    const page_count = vm.pop(u32);
+                    const old_page_count = @intCast(u32, vm.memory_len / wasm.page_size);
+                    const new_len = vm.memory_len + page_count * wasm.page_size;
+                    if (new_len > vm.memory.len) {
+                        vm.push(i32, -1);
+                    } else {
+                        vm.memory_len = new_len;
+                        vm.push(u32, old_page_count);
+                    }
+                },
+                .const_0_32 => {
+                    vm.push(i32, @as(i32, 0));
+                },
+                .const_0_64 => {
+                    vm.push(i64, @as(i64, 0));
+                },
+                .const_1_32 => {
+                    vm.push(i32, @as(i32, 1));
+                },
+                .const_1_64 => {
+                    vm.push(i64, @as(i64, 1));
+                },
                 .const_32 => {
                     const x = operands[pc.operand];
                     pc.operand += 1;
@@ -1938,788 +2364,547 @@ const VirtualMachine = struct {
                     pc.operand += 2;
                     vm.push(i64, @bitCast(i64, x));
                 },
+                .const_umax_32 => {
+                    vm.push(i32, -1);
+                },
+                .const_umax_64 => {
+                    vm.push(i64, -1);
+                },
+                .eqz_32 => {
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @boolToInt(lhs == 0));
+                },
+                .eq_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @boolToInt(lhs == rhs));
+                },
+                .ne_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @boolToInt(lhs != rhs));
+                },
+                .slt_32 => {
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u32, @boolToInt(lhs < rhs));
+                },
+                .ult_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @boolToInt(lhs < rhs));
+                },
+                .sgt_32 => {
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u32, @boolToInt(lhs > rhs));
+                },
+                .ugt_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @boolToInt(lhs > rhs));
+                },
+                .sle_32 => {
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u32, @boolToInt(lhs <= rhs));
+                },
+                .ule_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @boolToInt(lhs <= rhs));
+                },
+                .sge_32 => {
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(u32, @boolToInt(lhs >= rhs));
+                },
+                .uge_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @boolToInt(lhs >= rhs));
+                },
+                .eqz_64 => {
+                    const lhs = vm.pop(u64);
+                    vm.push(u32, @boolToInt(lhs == 0));
+                },
+                .eq_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u32, @boolToInt(lhs == rhs));
+                },
+                .ne_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u32, @boolToInt(lhs != rhs));
+                },
+                .slt_64 => {
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u32, @boolToInt(lhs < rhs));
+                },
+                .ult_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u32, @boolToInt(lhs < rhs));
+                },
+                .sgt_64 => {
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u32, @boolToInt(lhs > rhs));
+                },
+                .ugt_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u32, @boolToInt(lhs > rhs));
+                },
+                .sle_64 => {
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u32, @boolToInt(lhs <= rhs));
+                },
+                .ule_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u32, @boolToInt(lhs <= rhs));
+                },
+                .sge_64 => {
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(u32, @boolToInt(lhs >= rhs));
+                },
+                .uge_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u32, @boolToInt(lhs >= rhs));
+                },
+                .feq_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u32, @boolToInt(lhs == rhs));
+                },
+                .fne_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u32, @boolToInt(lhs != rhs));
+                },
+                .flt_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u32, @boolToInt(lhs < rhs));
+                },
+                .fgt_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u32, @boolToInt(lhs > rhs));
+                },
+                .fle_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u32, @boolToInt(lhs <= rhs));
+                },
+                .fge_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(u32, @boolToInt(lhs >= rhs));
+                },
+                .feq_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u32, @boolToInt(lhs == rhs));
+                },
+                .fne_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u32, @boolToInt(lhs != rhs));
+                },
+                .flt_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u32, @boolToInt(lhs <= rhs));
+                },
+                .fgt_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u32, @boolToInt(lhs > rhs));
+                },
+                .fle_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u32, @boolToInt(lhs <= rhs));
+                },
+                .fge_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(u32, @boolToInt(lhs >= rhs));
+                },
+                .clz_32 => {
+                    vm.push(u32, @clz(vm.pop(u32)));
+                },
+                .ctz_32 => {
+                    vm.push(u32, @ctz(vm.pop(u32)));
+                },
+                .popcnt_32 => {
+                    vm.push(u32, @popCount(vm.pop(u32)));
+                },
                 .add_32 => {
                     const rhs = vm.pop(u32);
                     const lhs = vm.pop(u32);
                     vm.push(u32, lhs +% rhs);
+                },
+                .sub_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs -% rhs);
+                },
+                .mul_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs *% rhs);
+                },
+                .sdiv_32 => {
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(i32, @divTrunc(lhs, rhs));
+                },
+                .udiv_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @divTrunc(lhs, rhs));
+                },
+                .srem_32 => {
+                    const rhs = vm.pop(i32);
+                    const lhs = vm.pop(i32);
+                    vm.push(i32, @rem(lhs, rhs));
+                },
+                .urem_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, @rem(lhs, rhs));
                 },
                 .and_32 => {
                     const rhs = vm.pop(u32);
                     const lhs = vm.pop(u32);
                     vm.push(u32, lhs & rhs);
                 },
-                .wasm => {
-                    const wasm_op = @intToEnum(wasm.Opcode, opcodes[pc.opcode]);
-                    cpu_log.debug("op2={s}", .{@tagName(wasm_op)});
-                    pc.opcode += 1;
-                    switch (wasm_op) {
-                        .@"unreachable",
-                        .nop,
-                        .block,
-                        .loop,
-                        .@"if",
-                        .@"else",
-                        .end,
-                        .br,
-                        .br_if,
-                        .br_table,
-                        .@"return",
-                        .call,
-                        .drop,
-                        .select,
-                        .local_get,
-                        .local_set,
-                        .local_tee,
-                        .global_get,
-                        .global_set,
-                        .i32_const,
-                        .i64_const,
-                        .f32_const,
-                        .f64_const,
-                        .i32_add,
-                        .i32_and,
-                        .i32_reinterpret_f32,
-                        .i64_reinterpret_f64,
-                        .f32_reinterpret_i32,
-                        .f64_reinterpret_i64,
-                        .prefixed,
-                        => @panic("not produced by decodeCode"),
-
-                        .call_indirect => {
-                            const fn_id = vm.table[vm.pop(u32)];
-                            if (fn_id < vm.imports.len)
-                                vm.callImport(&vm.imports[fn_id])
-                            else
-                                vm.call(&vm.functions[fn_id - @intCast(u32, vm.imports.len)]);
-                        },
-                        .i32_load => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.push(u32, mem.readIntLittle(u32, vm.memory[offset..][0..4]));
-                        },
-                        .i64_load => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.push(u64, mem.readIntLittle(u64, vm.memory[offset..][0..8]));
-                        },
-                        .f32_load => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(u32, vm.memory[offset..][0..4]);
-                            vm.push(u32, int);
-                        },
-                        .f64_load => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(u64, vm.memory[offset..][0..8]);
-                            vm.push(u64, int);
-                        },
-                        .i32_load8_s => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.push(i32, @bitCast(i8, vm.memory[offset]));
-                        },
-                        .i32_load8_u => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.push(u32, vm.memory[offset]);
-                        },
-                        .i32_load16_s => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(i16, vm.memory[offset..][0..2]);
-                            vm.push(i32, int);
-                        },
-                        .i32_load16_u => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(u16, vm.memory[offset..][0..2]);
-                            vm.push(u32, int);
-                        },
-                        .i64_load8_s => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.push(i64, @bitCast(i8, vm.memory[offset]));
-                        },
-                        .i64_load8_u => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.push(u64, vm.memory[offset]);
-                        },
-                        .i64_load16_s => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(i16, vm.memory[offset..][0..2]);
-                            vm.push(i64, int);
-                        },
-                        .i64_load16_u => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(u16, vm.memory[offset..][0..2]);
-                            vm.push(u64, int);
-                        },
-                        .i64_load32_s => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(i32, vm.memory[offset..][0..4]);
-                            vm.push(i64, int);
-                        },
-                        .i64_load32_u => {
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            const int = mem.readIntLittle(u32, vm.memory[offset..][0..4]);
-                            vm.push(u64, int);
-                        },
-                        .i32_store => {
-                            const operand = vm.pop(u32);
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            mem.writeIntLittle(u32, vm.memory[offset..][0..4], operand);
-                        },
-                        .i64_store => {
-                            const operand = vm.pop(u64);
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            mem.writeIntLittle(u64, vm.memory[offset..][0..8], operand);
-                        },
-                        .f32_store => {
-                            const int = @bitCast(u32, vm.pop(f32));
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            mem.writeIntLittle(u32, vm.memory[offset..][0..4], int);
-                        },
-                        .f64_store => {
-                            const int = @bitCast(u64, vm.pop(f64));
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            mem.writeIntLittle(u64, vm.memory[offset..][0..8], int);
-                        },
-                        .i32_store8 => {
-                            const small = @truncate(u8, vm.pop(u32));
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.memory[offset] = small;
-                        },
-                        .i32_store16 => {
-                            const small = @truncate(u16, vm.pop(u32));
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            mem.writeIntLittle(u16, vm.memory[offset..][0..2], small);
-                        },
-                        .i64_store8 => {
-                            const operand = @truncate(u8, vm.pop(u64));
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            vm.memory[offset] = operand;
-                        },
-                        .i64_store16 => {
-                            const small = @truncate(u16, vm.pop(u64));
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            mem.writeIntLittle(u16, vm.memory[offset..][0..2], small);
-                        },
-                        .i64_store32 => {
-                            const small = @truncate(u32, vm.pop(u64));
-                            const offset = operands[pc.operand] + vm.pop(u32);
-                            pc.operand += 1;
-                            mem.writeIntLittle(u32, vm.memory[offset..][0..4], small);
-                        },
-                        .memory_size => {
-                            const page_count = @intCast(u32, vm.memory_len / wasm.page_size);
-                            vm.push(u32, page_count);
-                        },
-                        .memory_grow => {
-                            const page_count = vm.pop(u32);
-                            const old_page_count = @intCast(u32, vm.memory_len / wasm.page_size);
-                            const new_len = vm.memory_len + page_count * wasm.page_size;
-                            if (new_len > vm.memory.len) {
-                                vm.push(i32, -1);
-                            } else {
-                                vm.memory_len = new_len;
-                                vm.push(u32, old_page_count);
-                            }
-                        },
-                        .i32_eqz => {
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @boolToInt(lhs == 0));
-                        },
-                        .i32_eq => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @boolToInt(lhs == rhs));
-                        },
-                        .i32_ne => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @boolToInt(lhs != rhs));
-                        },
-                        .i32_lt_s => {
-                            const rhs = vm.pop(i32);
-                            const lhs = vm.pop(i32);
-                            vm.push(u32, @boolToInt(lhs < rhs));
-                        },
-                        .i32_lt_u => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @boolToInt(lhs < rhs));
-                        },
-                        .i32_gt_s => {
-                            const rhs = vm.pop(i32);
-                            const lhs = vm.pop(i32);
-                            vm.push(u32, @boolToInt(lhs > rhs));
-                        },
-                        .i32_gt_u => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @boolToInt(lhs > rhs));
-                        },
-                        .i32_le_s => {
-                            const rhs = vm.pop(i32);
-                            const lhs = vm.pop(i32);
-                            vm.push(u32, @boolToInt(lhs <= rhs));
-                        },
-                        .i32_le_u => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @boolToInt(lhs <= rhs));
-                        },
-                        .i32_ge_s => {
-                            const rhs = vm.pop(i32);
-                            const lhs = vm.pop(i32);
-                            vm.push(u32, @boolToInt(lhs >= rhs));
-                        },
-                        .i32_ge_u => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @boolToInt(lhs >= rhs));
-                        },
-                        .i64_eqz => {
-                            const lhs = vm.pop(u64);
-                            vm.push(u32, @boolToInt(lhs == 0));
-                        },
-                        .i64_eq => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u32, @boolToInt(lhs == rhs));
-                        },
-                        .i64_ne => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u32, @boolToInt(lhs != rhs));
-                        },
-                        .i64_lt_s => {
-                            const rhs = vm.pop(i64);
-                            const lhs = vm.pop(i64);
-                            vm.push(u32, @boolToInt(lhs < rhs));
-                        },
-                        .i64_lt_u => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u32, @boolToInt(lhs < rhs));
-                        },
-                        .i64_gt_s => {
-                            const rhs = vm.pop(i64);
-                            const lhs = vm.pop(i64);
-                            vm.push(u32, @boolToInt(lhs > rhs));
-                        },
-                        .i64_gt_u => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u32, @boolToInt(lhs > rhs));
-                        },
-                        .i64_le_s => {
-                            const rhs = vm.pop(i64);
-                            const lhs = vm.pop(i64);
-                            vm.push(u32, @boolToInt(lhs <= rhs));
-                        },
-                        .i64_le_u => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u32, @boolToInt(lhs <= rhs));
-                        },
-                        .i64_ge_s => {
-                            const rhs = vm.pop(i64);
-                            const lhs = vm.pop(i64);
-                            vm.push(u32, @boolToInt(lhs >= rhs));
-                        },
-                        .i64_ge_u => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u32, @boolToInt(lhs >= rhs));
-                        },
-                        .f32_eq => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(u32, @boolToInt(lhs == rhs));
-                        },
-                        .f32_ne => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(u32, @boolToInt(lhs != rhs));
-                        },
-                        .f32_lt => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(u32, @boolToInt(lhs < rhs));
-                        },
-                        .f32_gt => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(u32, @boolToInt(lhs > rhs));
-                        },
-                        .f32_le => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(u32, @boolToInt(lhs <= rhs));
-                        },
-                        .f32_ge => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(u32, @boolToInt(lhs >= rhs));
-                        },
-                        .f64_eq => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(u32, @boolToInt(lhs == rhs));
-                        },
-                        .f64_ne => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(u32, @boolToInt(lhs != rhs));
-                        },
-                        .f64_lt => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(u32, @boolToInt(lhs <= rhs));
-                        },
-                        .f64_gt => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(u32, @boolToInt(lhs > rhs));
-                        },
-                        .f64_le => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(u32, @boolToInt(lhs <= rhs));
-                        },
-                        .f64_ge => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(u32, @boolToInt(lhs >= rhs));
-                        },
-
-                        .i32_clz => {
-                            const operand = vm.pop(u32);
-                            vm.push(u32, @clz(operand));
-                        },
-                        .i32_ctz => {
-                            const operand = vm.pop(u32);
-                            vm.push(u32, @ctz(operand));
-                        },
-                        .i32_popcnt => {
-                            const operand = vm.pop(u32);
-                            vm.push(u32, @popCount(operand));
-                        },
-                        .i32_sub => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs -% rhs);
-                        },
-                        .i32_mul => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs *% rhs);
-                        },
-                        .i32_div_s => {
-                            const rhs = vm.pop(i32);
-                            const lhs = vm.pop(i32);
-                            vm.push(i32, @divTrunc(lhs, rhs));
-                        },
-                        .i32_div_u => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @divTrunc(lhs, rhs));
-                        },
-                        .i32_rem_s => {
-                            const rhs = vm.pop(i32);
-                            const lhs = vm.pop(i32);
-                            vm.push(i32, @rem(lhs, rhs));
-                        },
-                        .i32_rem_u => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, @rem(lhs, rhs));
-                        },
-                        .i32_or => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs | rhs);
-                        },
-                        .i32_xor => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs ^ rhs);
-                        },
-                        .i32_shl => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs << @truncate(u5, rhs));
-                        },
-                        .i32_shr_s => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(i32);
-                            vm.push(i32, lhs >> @truncate(u5, rhs));
-                        },
-                        .i32_shr_u => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, lhs >> @truncate(u5, rhs));
-                        },
-                        .i32_rotl => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, math.rotl(u32, lhs, rhs % 32));
-                        },
-                        .i32_rotr => {
-                            const rhs = vm.pop(u32);
-                            const lhs = vm.pop(u32);
-                            vm.push(u32, math.rotr(u32, lhs, rhs % 32));
-                        },
-
-                        .i64_clz => {
-                            const operand = vm.pop(u64);
-                            vm.push(u64, @clz(operand));
-                        },
-                        .i64_ctz => {
-                            const operand = vm.pop(u64);
-                            vm.push(u64, @ctz(operand));
-                        },
-                        .i64_popcnt => {
-                            const operand = vm.pop(u64);
-                            vm.push(u64, @popCount(operand));
-                        },
-                        .i64_add => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs +% rhs);
-                        },
-                        .i64_sub => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs -% rhs);
-                        },
-                        .i64_mul => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs *% rhs);
-                        },
-                        .i64_div_s => {
-                            const rhs = vm.pop(i64);
-                            const lhs = vm.pop(i64);
-                            vm.push(i64, @divTrunc(lhs, rhs));
-                        },
-                        .i64_div_u => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, @divTrunc(lhs, rhs));
-                        },
-                        .i64_rem_s => {
-                            const rhs = vm.pop(i64);
-                            const lhs = vm.pop(i64);
-                            vm.push(i64, @rem(lhs, rhs));
-                        },
-                        .i64_rem_u => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, @rem(lhs, rhs));
-                        },
-                        .i64_and => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs & rhs);
-                        },
-                        .i64_or => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs | rhs);
-                        },
-                        .i64_xor => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs ^ rhs);
-                        },
-                        .i64_shl => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs << @truncate(u6, rhs));
-                        },
-                        .i64_shr_s => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(i64);
-                            vm.push(i64, lhs >> @truncate(u6, rhs));
-                        },
-                        .i64_shr_u => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, lhs >> @truncate(u6, rhs));
-                        },
-                        .i64_rotl => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, math.rotl(u64, lhs, rhs % 64));
-                        },
-                        .i64_rotr => {
-                            const rhs = vm.pop(u64);
-                            const lhs = vm.pop(u64);
-                            vm.push(u64, math.rotr(u64, lhs, rhs % 64));
-                        },
-
-                        .f32_abs => {
-                            vm.push(f32, @fabs(vm.pop(f32)));
-                        },
-                        .f32_neg => {
-                            vm.push(f32, -vm.pop(f32));
-                        },
-                        .f32_ceil => {
-                            vm.push(f32, @ceil(vm.pop(f32)));
-                        },
-                        .f32_floor => {
-                            vm.push(f32, @floor(vm.pop(f32)));
-                        },
-                        .f32_trunc => {
-                            vm.push(f32, @trunc(vm.pop(f32)));
-                        },
-                        .f32_nearest => {
-                            vm.push(f32, @round(vm.pop(f32)));
-                        },
-                        .f32_sqrt => {
-                            vm.push(f32, @sqrt(vm.pop(f32)));
-                        },
-                        .f32_add => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(f32, lhs + rhs);
-                        },
-                        .f32_sub => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(f32, lhs - rhs);
-                        },
-                        .f32_mul => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(f32, lhs * rhs);
-                        },
-                        .f32_div => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(f32, lhs / rhs);
-                        },
-                        .f32_min => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(f32, @min(lhs, rhs));
-                        },
-                        .f32_max => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(f32, @max(lhs, rhs));
-                        },
-                        .f32_copysign => {
-                            const rhs = vm.pop(f32);
-                            const lhs = vm.pop(f32);
-                            vm.push(f32, math.copysign(lhs, rhs));
-                        },
-                        .f64_abs => {
-                            vm.push(f64, @fabs(vm.pop(f64)));
-                        },
-                        .f64_neg => {
-                            vm.push(f64, -vm.pop(f64));
-                        },
-                        .f64_ceil => {
-                            vm.push(f64, @ceil(vm.pop(f64)));
-                        },
-                        .f64_floor => {
-                            vm.push(f64, @floor(vm.pop(f64)));
-                        },
-                        .f64_trunc => {
-                            vm.push(f64, @trunc(vm.pop(f64)));
-                        },
-                        .f64_nearest => {
-                            vm.push(f64, @round(vm.pop(f64)));
-                        },
-                        .f64_sqrt => {
-                            vm.push(f64, @sqrt(vm.pop(f64)));
-                        },
-                        .f64_add => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(f64, lhs + rhs);
-                        },
-                        .f64_sub => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(f64, lhs - rhs);
-                        },
-                        .f64_mul => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(f64, lhs * rhs);
-                        },
-                        .f64_div => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(f64, lhs / rhs);
-                        },
-                        .f64_min => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(f64, @min(lhs, rhs));
-                        },
-                        .f64_max => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(f64, @max(lhs, rhs));
-                        },
-                        .f64_copysign => {
-                            const rhs = vm.pop(f64);
-                            const lhs = vm.pop(f64);
-                            vm.push(f64, math.copysign(lhs, rhs));
-                        },
-
-                        .i32_wrap_i64 => {
-                            const operand = vm.pop(i64);
-                            vm.push(i32, @truncate(i32, operand));
-                        },
-                        .i32_trunc_f32_s => {
-                            const operand = vm.pop(f32);
-                            vm.push(i32, @floatToInt(i32, @trunc(operand)));
-                        },
-                        .i32_trunc_f32_u => {
-                            const operand = vm.pop(f32);
-                            vm.push(u32, @floatToInt(u32, @trunc(operand)));
-                        },
-                        .i32_trunc_f64_s => {
-                            const operand = vm.pop(f64);
-                            vm.push(i32, @floatToInt(i32, @trunc(operand)));
-                        },
-                        .i32_trunc_f64_u => {
-                            const operand = vm.pop(f64);
-                            vm.push(u32, @floatToInt(u32, @trunc(operand)));
-                        },
-                        .i64_extend_i32_s => {
-                            const operand = vm.pop(i32);
-                            vm.push(i64, operand);
-                        },
-                        .i64_extend_i32_u => {
-                            const operand = vm.pop(u32);
-                            vm.push(u64, operand);
-                        },
-                        .i64_trunc_f32_s => {
-                            const operand = vm.pop(f32);
-                            vm.push(i64, @floatToInt(i64, @trunc(operand)));
-                        },
-                        .i64_trunc_f32_u => {
-                            const operand = vm.pop(f32);
-                            vm.push(u64, @floatToInt(u64, @trunc(operand)));
-                        },
-                        .i64_trunc_f64_s => {
-                            const operand = vm.pop(f64);
-                            vm.push(i64, @floatToInt(i64, @trunc(operand)));
-                        },
-                        .i64_trunc_f64_u => {
-                            const operand = vm.pop(f64);
-                            vm.push(u64, @floatToInt(u64, @trunc(operand)));
-                        },
-                        .f32_convert_i32_s => {
-                            vm.push(f32, @intToFloat(f32, vm.pop(i32)));
-                        },
-                        .f32_convert_i32_u => {
-                            vm.push(f32, @intToFloat(f32, vm.pop(u32)));
-                        },
-                        .f32_convert_i64_s => {
-                            vm.push(f32, @intToFloat(f32, vm.pop(i64)));
-                        },
-                        .f32_convert_i64_u => {
-                            vm.push(f32, @intToFloat(f32, vm.pop(u64)));
-                        },
-                        .f32_demote_f64 => {
-                            vm.push(f32, @floatCast(f32, vm.pop(f64)));
-                        },
-                        .f64_convert_i32_s => {
-                            vm.push(f64, @intToFloat(f64, vm.pop(i32)));
-                        },
-                        .f64_convert_i32_u => {
-                            vm.push(f64, @intToFloat(f64, vm.pop(u32)));
-                        },
-                        .f64_convert_i64_s => {
-                            vm.push(f64, @intToFloat(f64, vm.pop(i64)));
-                        },
-                        .f64_convert_i64_u => {
-                            vm.push(f64, @intToFloat(f64, vm.pop(u64)));
-                        },
-                        .f64_promote_f32 => {
-                            vm.push(f64, vm.pop(f32));
-                        },
-
-                        .i32_extend8_s => {
-                            vm.push(i32, @truncate(i8, vm.pop(i32)));
-                        },
-                        .i32_extend16_s => {
-                            vm.push(i32, @truncate(i16, vm.pop(i32)));
-                        },
-                        .i64_extend8_s => {
-                            vm.push(i64, @truncate(i8, vm.pop(i64)));
-                        },
-                        .i64_extend16_s => {
-                            vm.push(i64, @truncate(i16, vm.pop(i64)));
-                        },
-                        .i64_extend32_s => {
-                            vm.push(i64, @truncate(i32, vm.pop(i64)));
-                        },
-
-                        _ => unreachable,
-                    }
+                .or_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs | rhs);
                 },
-                .wasm_prefixed => {
-                    const wasm_prefixed_op = @intToEnum(wasm.PrefixedOpcode, opcodes[pc.opcode]);
-                    cpu_log.debug("op2={s}", .{@tagName(wasm_prefixed_op)});
-                    pc.opcode += 1;
-                    switch (wasm_prefixed_op) {
-                        .i32_trunc_sat_f32_s => unreachable,
-                        .i32_trunc_sat_f32_u => unreachable,
-                        .i32_trunc_sat_f64_s => unreachable,
-                        .i32_trunc_sat_f64_u => unreachable,
-                        .i64_trunc_sat_f32_s => unreachable,
-                        .i64_trunc_sat_f32_u => unreachable,
-                        .i64_trunc_sat_f64_s => unreachable,
-                        .i64_trunc_sat_f64_u => unreachable,
-                        .memory_init => unreachable,
-                        .data_drop => unreachable,
-                        .memory_copy => {
-                            const n = vm.pop(u32);
-                            const src = vm.pop(u32);
-                            const dest = vm.pop(u32);
-                            assert(dest + n <= vm.memory_len);
-                            assert(src + n <= vm.memory_len);
-                            assert(src + n <= dest or dest + n <= src); // overlapping
-                            @memcpy(vm.memory.ptr + dest, vm.memory.ptr + src, n);
-                        },
-                        .memory_fill => {
-                            const n = vm.pop(u32);
-                            const value = @truncate(u8, vm.pop(u32));
-                            const dest = vm.pop(u32);
-                            assert(dest + n <= vm.memory_len);
-                            @memset(vm.memory.ptr + dest, value, n);
-                        },
-                        .table_init => unreachable,
-                        .elem_drop => unreachable,
-                        .table_copy => unreachable,
-                        .table_grow => unreachable,
-                        .table_size => unreachable,
-                        .table_fill => unreachable,
-                        _ => unreachable,
-                    }
+                .xor_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs ^ rhs);
+                },
+                .shl_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs << @truncate(u5, rhs));
+                },
+                .ashr_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(i32);
+                    vm.push(i32, lhs >> @truncate(u5, rhs));
+                },
+                .lshr_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, lhs >> @truncate(u5, rhs));
+                },
+                .rol_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, math.rotl(u32, lhs, rhs % 32));
+                },
+                .ror_32 => {
+                    const rhs = vm.pop(u32);
+                    const lhs = vm.pop(u32);
+                    vm.push(u32, math.rotr(u32, lhs, rhs % 32));
+                },
+                .clz_64 => {
+                    vm.push(u64, @clz(vm.pop(u64)));
+                },
+                .ctz_64 => {
+                    vm.push(u64, @ctz(vm.pop(u64)));
+                },
+                .popcnt_64 => {
+                    vm.push(u64, @popCount(vm.pop(u64)));
+                },
+                .add_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs +% rhs);
+                },
+                .sub_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs -% rhs);
+                },
+                .mul_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs *% rhs);
+                },
+                .sdiv_64 => {
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(i64, @divTrunc(lhs, rhs));
+                },
+                .udiv_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @divTrunc(lhs, rhs));
+                },
+                .srem_64 => {
+                    const rhs = vm.pop(i64);
+                    const lhs = vm.pop(i64);
+                    vm.push(i64, @rem(lhs, rhs));
+                },
+                .urem_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, @rem(lhs, rhs));
+                },
+                .and_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs & rhs);
+                },
+                .or_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs | rhs);
+                },
+                .xor_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs ^ rhs);
+                },
+                .shl_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs << @truncate(u6, rhs));
+                },
+                .ashr_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(i64);
+                    vm.push(i64, lhs >> @truncate(u6, rhs));
+                },
+                .lshr_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, lhs >> @truncate(u6, rhs));
+                },
+                .rol_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, math.rotl(u64, lhs, rhs % 64));
+                },
+                .ror_64 => {
+                    const rhs = vm.pop(u64);
+                    const lhs = vm.pop(u64);
+                    vm.push(u64, math.rotr(u64, lhs, rhs % 64));
+                },
+                .fabs_32 => {
+                    vm.push(f32, @fabs(vm.pop(f32)));
+                },
+                .fneg_32 => {
+                    vm.push(f32, -vm.pop(f32));
+                },
+                .ceil_32 => {
+                    vm.push(f32, @ceil(vm.pop(f32)));
+                },
+                .floor_32 => {
+                    vm.push(f32, @floor(vm.pop(f32)));
+                },
+                .trunc_32 => {
+                    vm.push(f32, @trunc(vm.pop(f32)));
+                },
+                .nearest_32 => {
+                    vm.push(f32, @round(vm.pop(f32)));
+                },
+                .sqrt_32 => {
+                    vm.push(f32, @sqrt(vm.pop(f32)));
+                },
+                .fadd_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs + rhs);
+                },
+                .fsub_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs - rhs);
+                },
+                .fmul_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs * rhs);
+                },
+                .fdiv_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, lhs / rhs);
+                },
+                .fmin_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, @min(lhs, rhs));
+                },
+                .fmax_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, @max(lhs, rhs));
+                },
+                .copysign_32 => {
+                    const rhs = vm.pop(f32);
+                    const lhs = vm.pop(f32);
+                    vm.push(f32, math.copysign(lhs, rhs));
+                },
+                .fabs_64 => {
+                    vm.push(f64, @fabs(vm.pop(f64)));
+                },
+                .fneg_64 => {
+                    vm.push(f64, -vm.pop(f64));
+                },
+                .ceil_64 => {
+                    vm.push(f64, @ceil(vm.pop(f64)));
+                },
+                .floor_64 => {
+                    vm.push(f64, @floor(vm.pop(f64)));
+                },
+                .trunc_64 => {
+                    vm.push(f64, @trunc(vm.pop(f64)));
+                },
+                .nearest_64 => {
+                    vm.push(f64, @round(vm.pop(f64)));
+                },
+                .sqrt_64 => {
+                    vm.push(f64, @sqrt(vm.pop(f64)));
+                },
+                .fadd_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs + rhs);
+                },
+                .fsub_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs - rhs);
+                },
+                .fmul_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs * rhs);
+                },
+                .fdiv_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, lhs / rhs);
+                },
+                .fmin_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, @min(lhs, rhs));
+                },
+                .fmax_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, @max(lhs, rhs));
+                },
+                .copysign_64 => {
+                    const rhs = vm.pop(f64);
+                    const lhs = vm.pop(f64);
+                    vm.push(f64, math.copysign(lhs, rhs));
+                },
+                .ftos_32_32 => {
+                    vm.push(i32, @floatToInt(i32, vm.pop(f32)));
+                },
+                .ftou_32_32 => {
+                    vm.push(u32, @floatToInt(u32, vm.pop(f32)));
+                },
+                .ftos_32_64 => {
+                    vm.push(i32, @floatToInt(i32, vm.pop(f64)));
+                },
+                .ftou_32_64 => {
+                    vm.push(u32, @floatToInt(u32, vm.pop(f64)));
+                },
+                .sext_64_32 => {
+                    vm.push(i32, @bitCast(i32, vm.stack[vm.stack_top - 1]) >> 31);
+                },
+                .ftos_64_32 => {
+                    vm.push(i64, @floatToInt(i64, vm.pop(f32)));
+                },
+                .ftou_64_32 => {
+                    vm.push(u64, @floatToInt(u64, vm.pop(f32)));
+                },
+                .ftos_64_64 => {
+                    vm.push(i64, @floatToInt(i64, vm.pop(f64)));
+                },
+                .ftou_64_64 => {
+                    vm.push(u64, @floatToInt(u64, vm.pop(f64)));
+                },
+                .stof_32_32 => {
+                    vm.push(f32, @intToFloat(f32, vm.pop(i32)));
+                },
+                .utof_32_32 => {
+                    vm.push(f32, @intToFloat(f32, vm.pop(u32)));
+                },
+                .stof_32_64 => {
+                    vm.push(f32, @intToFloat(f32, vm.pop(i64)));
+                },
+                .utof_32_64 => {
+                    vm.push(f32, @intToFloat(f32, vm.pop(u64)));
+                },
+                .ftof_32_64 => {
+                    vm.push(f32, @floatCast(f32, vm.pop(f64)));
+                },
+                .stof_64_32 => {
+                    vm.push(f64, @intToFloat(f64, vm.pop(i32)));
+                },
+                .utof_64_32 => {
+                    vm.push(f64, @intToFloat(f64, vm.pop(u32)));
+                },
+                .stof_64_64 => {
+                    vm.push(f64, @intToFloat(f64, vm.pop(i64)));
+                },
+                .utof_64_64 => {
+                    vm.push(f64, @intToFloat(f64, vm.pop(u64)));
+                },
+                .ftof_64_32 => {
+                    vm.push(f64, @floatCast(f64, vm.pop(f32)));
+                },
+                .sext8_32 => {
+                    vm.push(i32, @truncate(i8, vm.pop(i32)));
+                },
+                .sext16_32 => {
+                    vm.push(i32, @truncate(i16, vm.pop(i32)));
+                },
+                .sext8_64 => {
+                    vm.push(i64, @truncate(i8, vm.pop(i64)));
+                },
+                .sext16_64 => {
+                    vm.push(i64, @truncate(i16, vm.pop(i64)));
+                },
+                .sext32_64 => {
+                    vm.push(i64, @truncate(i32, vm.pop(i64)));
+                },
+                .memcpy => {
+                    const n = vm.pop(u32);
+                    const src = vm.pop(u32);
+                    const dest = vm.pop(u32);
+                    assert(dest + n <= vm.memory_len);
+                    assert(src + n <= vm.memory_len);
+                    assert(src + n <= dest or dest + n <= src); // overlapping
+                    @memcpy(vm.memory.ptr + dest, vm.memory.ptr + src, n);
+                },
+                .memset => {
+                    const n = vm.pop(u32);
+                    const value = @truncate(u8, vm.pop(u32));
+                    const dest = vm.pop(u32);
+                    assert(dest + n <= vm.memory_len);
+                    @memset(vm.memory.ptr + dest, value, n);
                 },
             }
         }
